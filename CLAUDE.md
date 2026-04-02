@@ -20,6 +20,12 @@ Before making changes:
 - Avoid premature abstraction.
 - Avoid placeholder code, fake implementations, and TODO-heavy patches.
 - Do not silently change unrelated code.
+- Assume the user is a beginner.
+- Explain changes in plain English
+- Prefer the simplest working solution.
+- Avoid unnecessary dependencies.
+- Before coding, inspect and propose a plan.
+- After coding, verify the result.
 
 ## Dependencies
 - Prefer built-in or already-installed tools first.
