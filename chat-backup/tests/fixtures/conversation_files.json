@@ -1,0 +1,79 @@
+{
+  "title": "Pictures",
+  "conversation_id": "22222222-2222-3333-4444-555555555555",
+  "create_time": 1789310000.0,
+  "update_time": 1789310300.0,
+  "default_model_slug": "gpt-5",
+  "current_node": "does-not-exist",
+  "is_archived": false,
+  "gizmo_id": "g-p-aaaa",
+  "mapping": {
+    "root": {"id": "root", "parent": null, "children": ["u1"], "message": null},
+    "u1": {
+      "id": "u1", "parent": "root", "children": ["t1"],
+      "message": {
+        "id": "u1", "author": {"role": "user"}, "create_time": 1789310000.0,
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-Abc123", "size_bytes": 1234, "width": 100, "height": 100},
+            "Make this a painting and read the attached report"
+          ]
+        },
+        "metadata": {
+          "attachments": [
+            {"id": "file-Abc123", "name": "photo.png", "mime_type": "image/png", "size": 1234},
+            {"id": "file-Rep456", "name": "report: final?.pdf", "mime_type": "application/pdf", "size": 9999}
+          ]
+        },
+        "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "t1": {
+      "id": "t1", "parent": "u1", "children": ["a1"],
+      "message": {
+        "id": "t1", "author": {"role": "tool", "name": "dalle.text2im"}, "create_time": 1789310100.0,
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            {
+              "content_type": "image_asset_pointer",
+              "asset_pointer": "sediment://file_00000000842871f5b6a1bab8e3499232",
+              "size_bytes": 305531, "width": 1024, "height": 1024,
+              "metadata": {"dalle": {"prompt": "An oil painting of a cat", "seed": 1, "gen_id": "g1"}}
+            }
+          ]
+        },
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "a1": {
+      "id": "a1", "parent": "t1", "children": ["u2"],
+      "message": {
+        "id": "a1", "author": {"role": "assistant"}, "create_time": 1789310110.0,
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            "Here is the painting:",
+            {"content_type": "image_asset_pointer", "asset_pointer": "sediment://file_00000000842871f5b6a1bab8e3499232", "size_bytes": 305531}
+          ]
+        },
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "u2": {
+      "id": "u2", "parent": "a1", "children": [],
+      "message": {
+        "id": "u2", "author": {"role": "user"}, "create_time": 1789310300.0,
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            {"content_type": "image_asset_pointer", "asset_pointer": "sediment://abc#file_zzz#p_0.hash.jpg"},
+            "And here is page one of the PDF"
+          ]
+        },
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    }
+  }
+}

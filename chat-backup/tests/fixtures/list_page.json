@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "id": "c-1", "title": "Budget\n",
+      "create_time": "2026-09-13T10:00:00.123456Z", "update_time": "2026-09-13T11:00:00.000000Z",
+      "is_archived": false, "gizmo_id": null, "mapping": null, "current_node": null
+    },
+    {
+      "id": "c-2", "title": "Old chat",
+      "create_time": "2026-09-01T10:00:00+00:00", "update_time": "2026-09-02T10:00:00+00:00",
+      "is_archived": true, "gizmo_id": null, "mapping": null, "current_node": null
+    }
+  ],
+  "total": 3,
+  "limit": 100,
+  "offset": 0
+}

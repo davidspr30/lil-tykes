@@ -1,0 +1,15 @@
+{
+  "items": [
+    {
+      "gizmo": {"gizmo": {"id": "g-p-aaaa", "display": {"name": "Work"}}, "files": []},
+      "conversations": [
+        {"id": "c-p1", "title": "Project chat", "create_time": "2026-09-13T09:00:00Z", "update_time": "2026-09-13T09:30:00Z", "is_archived": false}
+      ]
+    },
+    {
+      "gizmo": {"gizmo": {"id": "g-p-bbbb", "display": {"name": "Home"}}, "files": []},
+      "conversations": []
+    }
+  ],
+  "cursor": null
+}
