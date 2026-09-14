@@ -37,7 +37,9 @@ POLL_SECONDS = 60                   # fast poll interval
 POLL_JITTER = 0.4                   # +/- 40 %, so the timing is not a metronome
 SWEEP_SECONDS = 30 * 60             # full check interval
 CALL_GAP_SECONDS = (1.0, 1.5)       # minimum pause between two API calls
-PENDING_PER_ITERATION = 20          # chats fetched per cycle, so a big backfill can't starve the polling
+PENDING_PER_ITERATION = 8           # chats fetched per cycle; about 8 a minute stays under ChatGPT's rate limit
+RATE_LIMIT_PAUSE_SECONDS = 10 * 60  # ChatGPT said "too many requests": wait this long, then carry on
+RATE_LIMIT_ALERT_AFTER = 6          # rate-limited cycles in a row (over an hour) before the phone hears about it
 RECENT_PROJECT_CHATS = 5            # chats per project the fast poll looks at
 STREAMING_RECHECK_SECONDS = 120     # an answer was still being written: look again this much later
 BROWSER_RESTART_SECONDS = 6 * 3600  # Chromium leaks memory; a routine restart keeps it in check
@@ -107,6 +109,7 @@ class Poller:
         self.index_dirty = False
         self.failures = 0
         self.challenge_failures = 0
+        self.rate_limited_cycles = 0
         self.restart_failures = 0
         self.next_sweep = 0.0
         self.next_restart = 0.0
@@ -386,8 +389,10 @@ class Poller:
 
             self.failures = 0
             self.challenge_failures = 0
+            self.rate_limited_cycles = 0
             self.notifier.set_problem("api_errors", False, "ChatGPT API calls work again")
             self.notifier.set_problem("challenge", False, "Cloudflare check cleared")
+            self.notifier.set_problem("rate_limited", False, "ChatGPT accepts requests again")
 
             if time.monotonic() >= self.next_restart:
                 log.info("routine browser restart")
@@ -401,6 +406,8 @@ class Poller:
                 return LOGIN_RETRY_SECONDS
             if error.kind in ("challenge", "blocked"):
                 return self._handle_challenge(error)
+            if error.kind == "rate_limited":
+                return self._handle_rate_limit(error)
             return self._handle_failure(error)
         except Exception as error:  # noqa: BLE001 - the loop must survive anything
             return self._handle_failure(error)
@@ -464,6 +471,18 @@ class Poller:
                 "lasts for hours, check that the machine is on your home internet, not a VPN.")
         return CHALLENGE_RETRY_SECONDS if error.kind == "challenge" else BLOCKED_RETRY_SECONDS
 
+    def _handle_rate_limit(self, error: ApiError) -> float:
+        """ChatGPT wants fewer requests. That is not a failure: no browser restart, no error alert, just a pause."""
+        self.rate_limited_cycles += 1
+        log.warning("rate limited by ChatGPT (%d cycles in a row); pausing %d minutes",
+                    self.rate_limited_cycles, RATE_LIMIT_PAUSE_SECONDS // 60)
+        if self.rate_limited_cycles >= RATE_LIMIT_ALERT_AFTER:
+            self.notifier.set_problem(
+                "rate_limited", True,
+                f"ChatGPT has refused requests for over an hour ({error.detail[:100]}). The backup keeps "
+                "pausing and retrying on its own; chats are saved once it lets up.")
+        return RATE_LIMIT_PAUSE_SECONDS
+
     def _handle_failure(self, error: BaseException) -> float:
         self.failures += 1
         log.exception("cycle failed (%d in a row): %s", self.failures, error)
@@ -488,7 +507,7 @@ class Poller:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="chatbackup", description="Keep a local copy of every ChatGPT chat.")
     parser.add_argument("--once", action="store_true",
-                        help="check once, archive up to 20 chats, then exit (for setup and testing)")
+                        help="check once, archive up to 8 chats, then exit (for setup and testing)")
     args = parser.parse_args(argv)
 
     config = load_config()

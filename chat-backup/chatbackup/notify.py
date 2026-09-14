@@ -21,6 +21,7 @@ PROBLEM_PRIORITY = {
     "login": PRIORITY_HIGH,
     "challenge": PRIORITY_HIGH,
     "api_errors": PRIORITY_DEFAULT,
+    "rate_limited": PRIORITY_DEFAULT,
     "disk": PRIORITY_HIGH,
 }
 STARTUP_NOTICE_INTERVAL = 3600      # seconds; a crash loop must not spam the phone

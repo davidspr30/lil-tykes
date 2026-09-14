@@ -27,6 +27,8 @@ def db(tmp_path):
 def test_pending_only_on_a_real_change(db):
     assert db.upsert_listed(item(), 10.0) == "new"
     assert db.get("c-1").pending is True
+    assert db.upsert_listed(item(update_time=1003.0), 10.5) == "same"     # already waiting for its first fetch
+    assert db.get("c-1").pending is True
     fetched(db, "c-1", 1000.0)
     assert db.get("c-1").pending is False
 

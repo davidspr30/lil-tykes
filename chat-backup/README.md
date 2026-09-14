@@ -93,7 +93,7 @@ user 1000: check with `id -u`, and change `user:` if yours differs.
 docker compose run --rm chatbackup --once
 ```
 
-This checks once, archives up to 20 chats and exits.
+This checks once, archives up to 8 chats and exits.
 
 Check the output for `seeding cookies from storage_state.json`, then
 `token captured` (or `logged in`), then `archived: <title>` lines. Afterwards
@@ -111,8 +111,8 @@ docker compose logs -f        # Ctrl-C stops the log view, not the service
 ```
 
 Check: the log shows `full check started` and a stream of `archived:` lines
-(the first full pass through a big account takes a while: about 20 chats per
-minute). After a couple of minutes `docker compose ps` shows the container as
+(the first full pass through a big account takes a while: about 8 chats per
+minute, roughly 6 hours per 3,000 chats, to stay under ChatGPT's rate limit). After a couple of minutes `docker compose ps` shows the container as
 `healthy`, and `data/.heartbeat` is refreshed every 30 seconds.
 
 ### 5. Phone alerts
@@ -195,6 +195,7 @@ editor's search or `grep -ri "phrase" data/archive`.
 | `login` | the saved ChatGPT session expired | Step 1 on the laptop, copy the file into `data/`. The service notices within 10 minutes; `docker compose restart` makes it immediate. |
 | `challenge` | Cloudflare keeps challenging the browser | Usually clears by itself. If it lasts hours, make sure the machine is not on a VPN and has your normal home address. |
 | `api_errors` | several checks in a row failed | `docker compose logs --tail 100`. If ChatGPT changed its internals, the code needs updating. |
+| `rate_limited` | ChatGPT has answered "too many requests" for over an hour | Nothing, usually: the service pauses 10 minutes at a time and carries on by itself. Shorter rate limits are normal while the first full pass runs and do not alert. |
 | `disk` | under 2 GB free on the archive disk | Make room. |
 | `poller down` | no heartbeat for 10 minutes (sent by the host script) | `docker compose ps`, `docker compose logs --tail 100`. |
 | `mirror down` | rclone has not succeeded for 2 hours | `journalctl -u chat-backup --since -3h`. Often an expired Google token: repeat step 6.3. |

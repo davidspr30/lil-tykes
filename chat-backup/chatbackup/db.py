@@ -136,7 +136,11 @@ class Database:
         return [_conversation(row) for row in rows]
 
     def upsert_listed(self, item: ListItem, seen_at: float) -> str:
-        """Record that a list contained this chat. Returns new, changed, reappeared or same."""
+        """Record that a list contained this chat. Returns new, changed, reappeared or same.
+
+        "changed" means an up-to-date chat now needs a fetch. A chat already waiting for one is "same",
+        so a long backlog is not logged again on every check.
+        """
         row = self.get(item.id)
         if row is None:
             self.conn.execute(
@@ -161,7 +165,7 @@ class Database:
              1 if (needs_fetch or row.pending) else 0, item.id))
         if row.deleted_at is not None:
             return "reappeared"
-        return "changed" if needs_fetch else "same"
+        return "changed" if needs_fetch and not row.pending else "same"
 
     def pending_conversations(self, limit: int | None, now: float) -> list[ConversationRow]:
         """Chats that need (re)fetching, newest first, skipping ones in retry backoff."""

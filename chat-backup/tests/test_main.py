@@ -9,7 +9,7 @@ from chatbackup.archive import Archive
 from chatbackup.chatgpt import ApiError, ListItem
 from chatbackup.config import Config
 from chatbackup.db import Database
-from chatbackup.main import Poller, Watchdog
+from chatbackup.main import RATE_LIMIT_ALERT_AFTER, RATE_LIMIT_PAUSE_SECONDS, Poller, Watchdog
 from chatbackup.notify import Notifier
 
 FILES_ID = "22222222-2222-3333-4444-555555555555"
@@ -159,6 +159,29 @@ def test_api_waits_when_rate_limited(poller, monkeypatch):
     monkeypatch.setattr(instance, "sleep", lambda seconds: waited.append(seconds))
     assert instance.api("/x") == {"ok": True}
     assert waited == [5]
+
+
+def test_rate_limit_pauses_without_counting_as_a_failure(poller, monkeypatch):
+    too_many = ApiError("rate_limited", 429, detail="Too many requests")
+    # Each cycle's fast poll tries twice (api() retries once), then ChatGPT answers normally again.
+    instance = poller({
+        "/backend-api/conversations": [too_many] * (2 * RATE_LIMIT_ALERT_AFTER) + [{"items": []}],
+        "/backend-api/gizmos/snorlax/sidebar": {"items": [], "cursor": None},
+    })
+    monkeypatch.setattr(instance, "sleep", lambda seconds: None)
+    instance.next_sweep = float("inf")          # only the fast poll runs
+    instance.next_restart = float("inf")        # no routine browser restart
+
+    for cycle in range(1, RATE_LIMIT_ALERT_AFTER + 1):
+        assert instance._cycle() == RATE_LIMIT_PAUSE_SECONDS
+        assert instance.failures == 0 and instance.browser.starts == 0     # not an error, no browser restart
+        expected = "problem" if cycle == RATE_LIMIT_ALERT_AFTER else "ok"   # the phone only hears after an hour
+        assert instance.db.get_state("alert:rate_limited", "ok") == expected
+    assert instance.db.get_state("alert:api_errors", "ok") == "ok"
+
+    assert instance._cycle() < RATE_LIMIT_PAUSE_SECONDS                     # back to normal polling
+    assert instance.rate_limited_cycles == 0
+    assert instance.db.get_state("alert:rate_limited", "ok") == "ok"
 
 
 def test_sweep_marks_missing_chats_deleted(poller, branch_conversation):
