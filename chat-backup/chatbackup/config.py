@@ -17,6 +17,8 @@ class Config:
     ntfy_topic: str     # empty means "log alerts instead of pushing them"
     ntfy_url: str
     log_level: str
+    notify_new_chats: bool = False  # push a phone alert for every newly created chat
+    download_days: int = 0          # only download chats created or used in the last N days; 0 means all history
 
     @property
     def archive_dir(self) -> Path:
@@ -36,6 +38,12 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     except (ZoneInfoNotFoundError, ValueError):
         raise SystemExit(f"TZ={timezone!r} is not a valid time zone name (expected something like America/New_York)")
 
+    days_text = env.get("DOWNLOAD_DAYS", "").strip() or "0"
+    try:
+        download_days = int(days_text)
+    except ValueError:
+        raise SystemExit(f"DOWNLOAD_DAYS={days_text!r} is not a whole number of days (use 0 for your whole history)")
+
     return Config(
         data_dir=Path(env.get("DATA_DIR", "/data")),
         timezone=timezone,
@@ -43,4 +51,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         ntfy_topic=env.get("NTFY_TOPIC", "").strip(),
         ntfy_url=env.get("NTFY_URL", "").strip().rstrip("/") or "https://ntfy.sh",
         log_level=env.get("LOG_LEVEL", "").strip().upper() or "INFO",
+        notify_new_chats=env.get("NOTIFY_NEW_CHATS", "").strip().lower() in ("1", "true", "yes", "on"),
+        download_days=max(0, download_days),
     )

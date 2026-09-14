@@ -11,7 +11,7 @@ def notifier(tmp_path, monkeypatch):
     db = Database(tmp_path / "t.sqlite3")
     instance = Notifier("https://ntfy.example", "topic", db)
     sent = []
-    monkeypatch.setattr(instance, "send", lambda title, message, priority=3, tags="": sent.append((title, priority)) or True)
+    monkeypatch.setattr(instance, "send", lambda title, message, priority=3, tags="", click="": sent.append((title, priority)) or True)
     instance.sent = sent
     yield instance
     db.close()
@@ -50,6 +50,22 @@ def test_digest_once_per_day(notifier):
     assert notifier.digest_due(later + 86400, tz) is True
 
 
+def test_new_chat_alert_opens_the_chat(notifier, monkeypatch):
+    calls = []
+    monkeypatch.setattr(notifier, "send", lambda title, message, priority=3, tags="", click="":
+                        calls.append((title, message, click)) or True)
+    notifier.new_chat("Trip planning", "abc-123")
+    notifier.new_chat("", "def-456")
+    assert calls == [("New ChatGPT chat", "Trip planning", "https://chatgpt.com/c/abc-123"),
+                     ("New ChatGPT chat", "Untitled chat", "https://chatgpt.com/c/def-456")]
+
+
+def test_rest_and_resume_notes(notifier):
+    notifier.resting("03:09")
+    notifier.resumed()
+    assert notifier.sent == [("chat-backup resting", 2), ("chat-backup resumed", 2)]
+
+
 def test_send_without_topic_only_logs(tmp_path):
     db = Database(tmp_path / "t.sqlite3")
     assert Notifier("https://ntfy.example", "", db).send("t", "m") is False
@@ -74,10 +90,12 @@ def test_send_posts_to_ntfy(tmp_path, monkeypatch):
 
     monkeypatch.setattr("chatbackup.notify.urllib.request.urlopen", fake_urlopen)
     db = Database(tmp_path / "t.sqlite3")
-    assert Notifier("https://ntfy.example", "topic", db).send("Tïtle", "bödy", 4, "warning") is True
+    assert Notifier("https://ntfy.example", "topic", db).send("Tïtle", "bödy", 4, "warning",
+                                                           click="https://chatgpt.com/c/x") is True
     db.close()
     assert captured["url"] == "https://ntfy.example/topic"
     assert captured["headers"]["Title"] == "T?tle"          # headers must stay ASCII
     assert captured["headers"]["Priority"] == "4"
     assert captured["headers"]["Tags"] == "warning"
+    assert captured["headers"]["Click"] == "https://chatgpt.com/c/x"
     assert captured["data"] == "bödy".encode("utf-8")

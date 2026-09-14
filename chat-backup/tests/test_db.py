@@ -47,6 +47,19 @@ def test_pending_only_on_a_real_change(db):
     assert db.upsert_listed(item(update_time=1002.0, gizmo_id="g-p-1"), 16.0) == "changed"
 
 
+def test_pending_skips_chats_without_recent_activity(db):
+    def listed(chat_id, created, updated):
+        db.upsert_listed(ListItem(id=chat_id, title=chat_id, create_time=created, update_time=updated,
+                                  is_archived=False, gizmo_id=None), 1.0)
+
+    listed("untouched", created=100.0, updated=200.0)
+    listed("old-but-used", created=100.0, updated=5000.0)      # an old chat you used again recently
+    listed("new", created=4000.0, updated=4000.0)
+    assert [row.id for row in db.pending_conversations(None, now=1.0, active_since=3000.0)] == ["old-but-used", "new"]
+    assert db.stats_since(0.0, active_since=3000.0)["pending"] == 2
+    assert db.stats_since(0.0)["pending"] == 3
+
+
 def test_deletion_detection_and_reappearance(db):
     db.upsert_listed(item("c-1"), 100.0)
     db.upsert_listed(item("c-2"), 100.0)
@@ -73,6 +86,8 @@ def test_pending_order_and_retry_backoff(db):
     db.upsert_listed(item("new", update_time=20.0), 1.0)
     assert [row.id for row in db.pending_conversations(None, now=5.0)] == ["new", "old"]
     assert [row.id for row in db.pending_conversations(1, now=5.0)] == ["new"]
+    assert [row.id for row in db.pending_conversations(None, now=5.0, updated_after=15.0)] == ["new"]
+    assert [row.id for row in db.pending_conversations(None, now=5.0, updated_before=15.0)] == ["old"]
 
     db.mark_fetch_failed("new", "boom", now=100.0)
     assert [row.id for row in db.pending_conversations(None, now=100.0)] == ["old"]

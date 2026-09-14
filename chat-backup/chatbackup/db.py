@@ -167,11 +167,27 @@ class Database:
             return "reappeared"
         return "changed" if needs_fetch and not row.pending else "same"
 
-    def pending_conversations(self, limit: int | None, now: float) -> list[ConversationRow]:
-        """Chats that need (re)fetching, newest first, skipping ones in retry backoff."""
+    def pending_conversations(self, limit: int | None, now: float, *, updated_after: float | None = None,
+                              updated_before: float | None = None,
+                              active_since: float | None = None) -> list[ConversationRow]:
+        """Chats that need (re)fetching, newest first, skipping ones in retry backoff.
+
+        updated_after / updated_before narrow it to recently active chats or to the older backlog.
+        active_since skips chats that were neither created nor updated since then.
+        """
         sql = ("SELECT * FROM conversations WHERE pending = 1 AND deleted_at IS NULL"
-               " AND (not_before IS NULL OR not_before <= ?) ORDER BY update_time DESC")
+               " AND (not_before IS NULL OR not_before <= ?)")
         params: list = [now]
+        if updated_after is not None:
+            sql += " AND update_time >= ?"
+            params.append(updated_after)
+        if updated_before is not None:
+            sql += " AND update_time < ?"
+            params.append(updated_before)
+        if active_since is not None:
+            sql += " AND (create_time >= ? OR update_time >= ?)"
+            params.extend([active_since, active_since])
+        sql += " ORDER BY update_time DESC"
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
@@ -250,6 +266,18 @@ class Database:
             (conversation_id, MAX_FILE_ATTEMPTS))
         return [_file(row) for row in rows]
 
+    def chats_with_waiting_files(self, active_since: float | None = None) -> list[tuple[str, str]]:
+        """(chat id, folder) for saved, undeleted chats with files still to download, most recently updated first."""
+        sql = ("SELECT DISTINCT c.id, c.folder, c.update_time FROM files f JOIN conversations c ON c.id = f.conversation_id"
+               " WHERE c.folder IS NOT NULL AND c.deleted_at IS NULL"
+               " AND (f.status = 'pending' OR (f.status = 'failed' AND f.attempts < ?))")
+        params: list = [MAX_FILE_ATTEMPTS]
+        if active_since is not None:
+            sql += " AND (c.create_time >= ? OR c.update_time >= ?)"
+            params.extend([active_since, active_since])
+        sql += " ORDER BY c.update_time DESC"
+        return [(row["id"], row["folder"]) for row in self.conn.execute(sql, params)]
+
     def mark_file_done(self, conversation_id: str, file_id: str, local_name: str, now: float) -> None:
         self.conn.execute(
             "UPDATE files SET status = 'done', local_name = ?, downloaded_at = ?, last_error = NULL"
@@ -276,7 +304,7 @@ class Database:
     def set_state(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (key, value))
 
-    def stats_since(self, since: float) -> dict[str, int]:
+    def stats_since(self, since: float, active_since: float | None = None) -> dict[str, int]:
         def count(sql: str, *params) -> int:
             return int(self.conn.execute(sql, params).fetchone()[0])
 
@@ -287,7 +315,11 @@ class Database:
             "fetched": count("SELECT COUNT(*) FROM conversations WHERE last_fetched_at >= ?", since),
             "deleted": count("SELECT COUNT(*) FROM conversations WHERE deleted_at >= ?", since),
             "files": count("SELECT COUNT(*) FROM files WHERE downloaded_at >= ?", since),
-            "pending": count("SELECT COUNT(*) FROM conversations WHERE pending = 1 AND deleted_at IS NULL"),
+            # With DOWNLOAD_DAYS, older chats are never downloaded, so they don't count as waiting.
+            "pending": (count("SELECT COUNT(*) FROM conversations WHERE pending = 1 AND deleted_at IS NULL")
+                        if active_since is None else
+                        count("SELECT COUNT(*) FROM conversations WHERE pending = 1 AND deleted_at IS NULL"
+                              " AND (create_time >= ? OR update_time >= ?)", active_since, active_since)),
             "failing": count("SELECT COUNT(*) FROM conversations WHERE fetch_failures > 0 AND deleted_at IS NULL"),
         }
 

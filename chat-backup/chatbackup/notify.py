@@ -34,7 +34,8 @@ class Notifier:
         self.topic = topic
         self.db = db
 
-    def send(self, title: str, message: str, priority: int = PRIORITY_DEFAULT, tags: str = "") -> bool:
+    def send(self, title: str, message: str, priority: int = PRIORITY_DEFAULT, tags: str = "",
+             click: str = "") -> bool:
         """Push one notification. Returns False when it could not be sent (and logs why)."""
         if not self.topic:
             log.info("alert (no NTFY_TOPIC set): %s: %s", title, message)
@@ -47,6 +48,8 @@ class Notifier:
         }
         if tags:
             headers["Tags"] = tags
+        if click:
+            headers["Click"] = click   # tapping the notification opens this URL
         request = urllib.request.Request(f"{self.url}/{self.topic}", data=message.encode("utf-8"),
                                          headers=headers, method="POST")
         try:
@@ -79,6 +82,19 @@ class Notifier:
             return
         self.db.set_state("last_startup_notice", str(now))
         self.send("chat-backup started", "The poller is running.", PRIORITY_LOW, "rocket")
+
+    def new_chat(self, title: str, conversation_id: str) -> None:
+        """One alert per newly created chat (opt-in: NOTIFY_NEW_CHATS=true). Tapping it opens the chat."""
+        self.send("New ChatGPT chat", title or "Untitled chat", PRIORITY_DEFAULT, "speech_balloon",
+                  click=f"https://chatgpt.com/c/{conversation_id}")
+
+    def resting(self, until_text: str) -> None:
+        self.send("chat-backup resting", f"No requests to ChatGPT until {until_text}, so its rate limit can reset. "
+                  "Nothing new is backed up until then.", PRIORITY_LOW, "zzz")
+
+    def resumed(self) -> None:
+        self.send("chat-backup resumed", "ChatGPT answered again after the break. New chats are being watched.",
+                  PRIORITY_LOW, "white_check_mark")
 
     def digest_due(self, now: float, tz: tzinfo) -> bool:
         local = datetime.fromtimestamp(now, tz)

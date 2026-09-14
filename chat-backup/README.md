@@ -111,8 +111,9 @@ docker compose logs -f        # Ctrl-C stops the log view, not the service
 ```
 
 Check: the log shows `full check started` and a stream of `archived:` lines
-(the first full pass through a big account takes a while: about 8 chats per
-minute, roughly 6 hours per 3,000 chats, to stay under ChatGPT's rate limit). After a couple of minutes `docker compose ps` shows the container as
+(the first full pass through a big account takes a while: a few chats per
+minute, roughly 15 hours per 3,000 chats, to stay under ChatGPT's rate limit; chats you
+are actively using are saved first). After a couple of minutes `docker compose ps` shows the container as
 `healthy`, and `data/.heartbeat` is refreshed every 30 seconds.
 
 ### 5. Phone alerts
@@ -127,6 +128,10 @@ minute, roughly 6 hours per 3,000 chats, to stay under ChatGPT's rate limit). Af
    again so the service reads it.
 
 Check: a "chat-backup started" notification arrives.
+
+Optional: set `NOTIFY_NEW_CHATS=true` in `.env` and run `docker compose up -d` to
+also get an alert for every new chat; tapping it opens the chat. Only chats
+created in the last two hours alert, so older chats found later stay quiet.
 
 ### 6. Google Drive mirror
 
@@ -175,7 +180,7 @@ exists, and `systemctl list-timers chat-backup.timer` shows the next run.
   `new:` and `archived:` for it and its folder appears.
 - Edit one of your messages in it. The transcript gains an "Alternate branches"
   section.
-- Delete the chat. After the next full check (up to 30 minutes) the folder gets
+- Delete the chat. After the next full check (up to 6 hours) the folder gets
   a `DELETED.txt` and the transcript header says so. Nothing is removed.
 - Stop the service for 25 minutes (`docker compose stop`) and start it again.
   Your phone gets "poller down", then "poller ok".
@@ -195,11 +200,13 @@ editor's search or `grep -ri "phrase" data/archive`.
 | `login` | the saved ChatGPT session expired | Step 1 on the laptop, copy the file into `data/`. The service notices within 10 minutes; `docker compose restart` makes it immediate. |
 | `challenge` | Cloudflare keeps challenging the browser | Usually clears by itself. If it lasts hours, make sure the machine is not on a VPN and has your normal home address. |
 | `api_errors` | several checks in a row failed | `docker compose logs --tail 100`. If ChatGPT changed its internals, the code needs updating. |
-| `rate_limited` | ChatGPT has answered "too many requests" for over an hour | Nothing, usually: the service pauses 10 minutes at a time and carries on by itself. Shorter rate limits are normal while the first full pass runs and do not alert. |
+| `rate_limited` | ChatGPT has refused requests for over 30 minutes | Usually nothing: the service backs off by itself (quick checks after 2, 4, 8, up to 30 minutes) and returns to normal when ChatGPT answers. If it lasts for hours, give it a rest (see Things to know). |
+| `chat-backup resting` / `resumed` | a planned break started, or ChatGPT answered again after it | Nothing. |
 | `disk` | under 2 GB free on the archive disk | Make room. |
 | `poller down` | no heartbeat for 10 minutes (sent by the host script) | `docker compose ps`, `docker compose logs --tail 100`. |
 | `mirror down` | rclone has not succeeded for 2 hours | `journalctl -u chat-backup --since -3h`. Often an expired Google token: repeat step 6.3. |
 | daily summary | everything is running | Nothing. Its absence is the alarm. |
+| `New ChatGPT chat` | a chat was just created (only with `NOTIFY_NEW_CHATS=true`) | Nothing; tap it to open the chat. |
 
 Every alert is sent once when the problem starts and once when it is over.
 
@@ -207,6 +214,14 @@ Every alert is sent once when the problem starts and once when it is over.
 
 - Run `docker compose stop` before `docker compose run --rm chatbackup --once`.
   Two browsers cannot share one profile.
+- `DOWNLOAD_DAYS` in `.env` limits downloads to chats created or used in the last
+  that many days, which keeps the first run small and far from ChatGPT's rate limit.
+  Older chats still appear in `INDEX.md` by title and are downloaded as soon as you
+  use them again. `0` downloads your whole history.
+- To give ChatGPT's rate limit a break, write a Unix time into `data/rest-until`,
+  for example 3 hours from now: `echo $(( $(date +%s) + 10800 )) > data/rest-until`.
+  Until then the service sends ChatGPT nothing (its heartbeat keeps going, so there is
+  no "poller down" alert), then starts again with quick checks only.
 - Set `LOG_LEVEL=DEBUG` in `.env` to see the first 300 characters of every
   ChatGPT response. That is the first thing to do when ChatGPT changes
   something and the log shows `KeyError` or `bad_body`.
@@ -227,7 +242,7 @@ Every alert is sent once when the problem starts and once when it is over.
   Projects sidebar. Anything new or changed is fetched and written: raw JSON
   first, then files, Canvas documents and the transcript. A chat whose answer
   is still being written is fetched again two minutes later.
-- Every 30 minutes it lists everything (active, archived, and every Project,
+- Every 6 hours it lists everything (active, archived, and every Project,
   because the main list leaves Project chats out). A chat missing from all
   lists is fetched one last time if ChatGPT still allows it, then marked
   deleted.
@@ -241,8 +256,11 @@ Every alert is sent once when the problem starts and once when it is over.
 
 ## Limits
 
-- A chat created and deleted within one minute can be missed.
+- A chat created and deleted within one minute can be missed. While ChatGPT is
+  rate limiting, a chat deleted before a download succeeds may keep only its title.
 - Voice-mode audio is not saved. Files over 50 MB are skipped.
+- A chat's first 4 files download together with it. Any more, and any a restart cut off,
+  follow a few per minute, and the transcript links them as they arrive.
 - Canvas documents are rebuilt by replaying ChatGPT's edits; when an edit
   cannot be replayed, a `.replay-warning.txt` sits next to the file and the raw
   edits stay in `conversation.json`.

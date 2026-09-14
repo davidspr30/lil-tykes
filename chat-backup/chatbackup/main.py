@@ -35,11 +35,21 @@ log = logging.getLogger("chatbackup")
 
 POLL_SECONDS = 60                   # fast poll interval
 POLL_JITTER = 0.4                   # +/- 40 %, so the timing is not a metronome
-SWEEP_SECONDS = 30 * 60             # full check interval
+SWEEP_SECONDS = 6 * 3600            # full check interval; quick checks cover every project, so this mostly marks deletions
+SWEEP_RETRY_SECONDS = 60 * 60       # a refused full check waits this long
+FIRST_SWEEP_DELAY_SECONDS = 30 * 60 # after a start or a rest, only quick checks for a while
 CALL_GAP_SECONDS = (1.0, 1.5)       # minimum pause between two API calls
-PENDING_PER_ITERATION = 8           # chats fetched per cycle; about 8 a minute stays under ChatGPT's rate limit
-RATE_LIMIT_PAUSE_SECONDS = 10 * 60  # ChatGPT said "too many requests": wait this long, then carry on
-RATE_LIMIT_ALERT_AFTER = 6          # rate-limited cycles in a row (over an hour) before the phone hears about it
+SWEEP_CALL_GAP_SECONDS = (2.5, 3.5) # slower during a full check: about 55 requests at ~20 a minute
+RECENT_CHAT_SECONDS = 2 * 3600      # chats active this recently are fetched first, and only chats created this recently alert
+RECENT_PER_ITERATION = 3            # recently active chats fetched per cycle, even while older ones wait
+BACKLOG_REQUEST_BUDGET = 8          # API requests per cycle for older chats (files count); well under ChatGPT's limit
+FILE_REQUEST_BUDGET = 8             # API requests per cycle for files still waiting (about 2 per file)
+INLINE_FILES_PER_CHAT = 4           # files downloaded together with a chat; any more wait for FILE_REQUEST_BUDGET
+ONCE_PENDING_LIMIT = 8              # chats fetched by --once
+RATE_LIMIT_PAUSE_SECONDS = 10 * 60  # ChatGPT said "too many requests": older chats wait this long
+RATE_LIMIT_ALERT_SECONDS = 30 * 60  # ChatGPT has refused lists or downloads for this long: tell the phone
+LIST_BACKOFF_SECONDS = (2 * 60, 30 * 60)  # a refused quick check waits 2, 4, 8 ... up to 30 minutes
+REST_FILE = "rest-until"            # data/rest-until holds a Unix time; until then ChatGPT gets no requests at all
 RECENT_PROJECT_CHATS = 5            # chats per project the fast poll looks at
 STREAMING_RECHECK_SECONDS = 120     # an answer was still being written: look again this much later
 BROWSER_RESTART_SECONDS = 6 * 3600  # Chromium leaks memory; a routine restart keeps it in check
@@ -109,17 +119,23 @@ class Poller:
         self.index_dirty = False
         self.failures = 0
         self.challenge_failures = 0
-        self.rate_limited_cycles = 0
         self.restart_failures = 0
+        self.downloads_refused_since: float | None = None  # first refused download since the last one that worked
+        self.lists_refused_since: float | None = None      # first refused quick check since the last one that worked
+        self.list_refusals = 0                             # refused quick checks in a row, for the backoff
+        self.after_rest = False                            # send a "resumed" note once ChatGPT answers after a rest
+        self.backlog_paused_until = 0.0                # monotonic time; older chats wait until then
+        self.requests_made = 0                         # every API request and file download, for the request budget
         self.next_sweep = 0.0
         self.next_restart = 0.0
         self.call_gap = CALL_GAP_SECONDS
+        self.sweep_call_gap = SWEEP_CALL_GAP_SECONDS
         self._last_call = 0.0
 
     # --- talking to ChatGPT -------------------------------------------------------------
 
     def api(self, path: str):
-        """One API call with pacing. Handles the two errors that a simple retry fixes."""
+        """One API call with pacing. Retries once on an expired token; a rate limit goes to the caller, which backs off."""
         self._pace()
         try:
             return self.browser.api_get(path)
@@ -127,10 +143,6 @@ class Poller:
             if error.kind == "token_expired":
                 log.info("token expired; reloading chatgpt.com to get a new one")
                 self.browser.reload()
-            elif error.kind == "rate_limited":
-                wait = min(error.retry_after or 30.0, 300.0)
-                log.warning("rate limited by ChatGPT; waiting %.0f s", wait)
-                self.sleep(wait)
             else:
                 raise
         self._pace()
@@ -141,6 +153,7 @@ class Poller:
         if wait > 0:
             time.sleep(wait)
         self._last_call = time.monotonic()
+        self.requests_made += 1
 
     def sleep(self, seconds: float) -> None:
         """Sleep in short slices so the watchdog sees progress and a stop request is noticed quickly."""
@@ -155,10 +168,11 @@ class Poller:
     # --- finding chats --------------------------------------------------------------------
 
     def fast_poll(self) -> None:
-        """Two requests: the newest chats outside Projects, and each Project's newest chats."""
+        """A few requests: the newest chats outside Projects, and the newest chats of every Project."""
         now = time.time()
         items = list_recent_conversations(self.api)
-        for project in list_projects(self.api, RECENT_PROJECT_CHATS, max_pages=1):
+        # Every sidebar page (5 projects each), so a new chat in any project is seen.
+        for project in list_projects(self.api, RECENT_PROJECT_CHATS, max_pages=10):
             self.db.upsert_project(project.id, project.title, now)
             items.extend(project.conversations)
         for item in items:
@@ -166,6 +180,14 @@ class Poller:
 
     def sweep(self) -> None:
         """List everything. Only after every list succeeded can a missing chat be called deleted."""
+        normal_gap = self.call_gap
+        self.call_gap = self.sweep_call_gap   # the full check is the biggest burst of requests, so it goes slower
+        try:
+            self._sweep()
+        finally:
+            self.call_gap = normal_gap
+
+    def _sweep(self) -> None:
         started = time.time()
         log.info("full check started")
         items = list_conversations(self.api, archived=False) + list_conversations(self.api, archived=True)
@@ -191,6 +213,9 @@ class Poller:
 
     def _record(self, item: ListItem) -> None:
         result = self.db.upsert_listed(item, time.time())
+        is_recent = item.create_time >= time.time() - RECENT_CHAT_SECONDS
+        if result == "new" and self.config.notify_new_chats and is_recent:
+            self.notifier.new_chat(item.title, item.id)
         if result == "reappeared":
             log.info("reappeared in ChatGPT: %s", item.title)
             row = self.db.get(item.id)
@@ -212,11 +237,21 @@ class Poller:
 
     # --- archiving chats ------------------------------------------------------------------
 
-    def process_pending(self, limit: int | None) -> int:
-        """Fetch chats that are new or changed, newest first. Returns how many were archived."""
+    def process_pending(self, limit: int | None, *, updated_after: float | None = None,
+                        updated_before: float | None = None, active_since: float | None = None,
+                        request_budget: int | None = None) -> int:
+        """Fetch chats that are new or changed, newest first. Returns how many were archived.
+
+        With request_budget, no new chat is started once that many requests were made (files count).
+        """
         done = 0
-        for row in self.db.pending_conversations(limit, time.time()):
+        budget_start = self.requests_made
+        rows = self.db.pending_conversations(limit, time.time(), updated_after=updated_after,
+                                             updated_before=updated_before, active_since=active_since)
+        for row in rows:
             if self.stop_requested:
+                break
+            if request_budget is not None and self.requests_made - budget_start >= request_budget:
                 break
             try:
                 self.process_conversation(row)
@@ -243,15 +278,13 @@ class Poller:
         folder = self.archive.folder_for(row.id, title, create_time, row.folder)
         self.archive.write_conversation(folder, conversation)
 
-        self.download_files(row.id, conversation, folder)
+        for pointer in extract_file_pointers(conversation):
+            self.db.upsert_file(row.id, pointer)
+        self.download_files(row.id, folder, INLINE_FILES_PER_CHAT)   # any more wait for download_waiting_files
 
-        mapping = conversation.get("mapping") or {}
-        docs = extract_canvas_docs(conversation, node_ids(main_path(mapping, conversation.get("current_node"))))
+        docs = self._canvas_docs(conversation)
         self.archive.write_canvas(folder, docs)
-        files = {file.file_id: FileInfo(file.local_name, file.status, file.name) for file in self.db.files_for(row.id)}
-        project_title = self.db.project_title(conversation.get("gizmo_id") or row.gizmo_id)
-        self.archive.write_transcript(
-            folder, build_transcript(conversation, files, project_title, row.deleted_at, self.tz, docs))
+        self._write_transcript(row, conversation, folder, docs)
 
         streaming = is_streaming(conversation)
         message_count, node_count = message_counts(conversation)
@@ -263,12 +296,16 @@ class Poller:
         self.index_dirty = True
         log.info("archived: %s%s", title or row.id, " (answer still being written; will look again)" if streaming else "")
 
-    def download_files(self, conversation_id: str, conversation: dict, folder: str) -> None:
-        for pointer in extract_file_pointers(conversation):
-            self.db.upsert_file(conversation_id, pointer)
-        for file in self.db.files_to_download(conversation_id):
+    def download_files(self, conversation_id: str, folder: str, max_files: int | None = None) -> int:
+        """Download a chat's waiting files, at most max_files. Returns how many were dealt with (saved or given up).
+
+        Files not reached stay pending, also when the service is stopped halfway, and download_waiting_files
+        picks them up later.
+        """
+        handled = 0
+        for file in self.db.files_to_download(conversation_id)[:max_files]:
             if self.stop_requested:
-                return
+                break
             try:
                 url = resolve_download_url(self.api, file.pointer, conversation_id)
                 self._pace()
@@ -278,6 +315,7 @@ class Poller:
                     log.warning("file %s in %s: %s", file.file_id, conversation_id, error)
                     self.db.mark_file_failed(conversation_id, file.file_id, str(error),
                                              permanent=error.kind in PERMANENT_FILE_ERRORS)
+                    handled += 1
                     continue
                 raise
             local_name = self.archive.local_name_for(file.file_id, file.kind, file.name, file.mime_type, content_type)
@@ -285,6 +323,45 @@ class Poller:
             self.db.mark_file_done(conversation_id, file.file_id, local_name, time.time())
             log.info("downloaded %s (%d bytes)", local_name, len(data))
             self.watchdog.beat()
+            handled += 1
+        return handled
+
+    def download_waiting_files(self, request_budget: int) -> int:
+        """Files left waiting (a restart mid-chat, or more than INLINE_FILES_PER_CHAT), a small budget per cycle."""
+        started = self.requests_made
+        handled = 0
+        touched: dict[str, str] = {}
+        try:
+            for conversation_id, folder in self.db.chats_with_waiting_files(self.download_cutoff()):
+                used = self.requests_made - started
+                if self.stop_requested or used >= request_budget:
+                    break
+                count = self.download_files(conversation_id, folder, max(1, (request_budget - used) // 2))
+                if count:
+                    handled += count
+                    touched[conversation_id] = folder
+        finally:
+            for conversation_id, folder in touched.items():   # link the new files, even if a rate limit cut this short
+                self._refresh_transcript(conversation_id, folder)
+        return handled
+
+    def _refresh_transcript(self, conversation_id: str, folder: str) -> None:
+        """Rewrite a saved chat's transcript so it links files downloaded after the chat itself."""
+        row = self.db.get(conversation_id)
+        conversation = self.archive.read_conversation(folder)
+        if row is None or conversation is None:
+            return
+        self._write_transcript(row, conversation, folder, self._canvas_docs(conversation))
+
+    def _canvas_docs(self, conversation: dict):
+        mapping = conversation.get("mapping") or {}
+        return extract_canvas_docs(conversation, node_ids(main_path(mapping, conversation.get("current_node"))))
+
+    def _write_transcript(self, row: ConversationRow, conversation: dict, folder: str, docs) -> None:
+        files = {file.file_id: FileInfo(file.local_name, file.status, file.name) for file in self.db.files_for(row.id)}
+        project_title = self.db.project_title(conversation.get("gizmo_id") or row.gizmo_id)
+        self.archive.write_transcript(
+            folder, build_transcript(conversation, files, project_title, row.deleted_at, self.tz, docs))
 
     def mark_deleted(self, row: ConversationRow) -> None:
         """ChatGPT no longer lists this chat. Keep everything; add a marker and update the transcript header."""
@@ -302,6 +379,89 @@ class Poller:
         self.index_dirty = True
         log.info("deleted in ChatGPT, kept in the archive: %s", row.title or row.id)
 
+    def archive_pending(self) -> None:
+        """Recently active chats first, every cycle. Older chats get a small request budget and wait while rate limited."""
+        recent_since = time.time() - RECENT_CHAT_SECONDS
+        try:
+            done = self.process_pending(RECENT_PER_ITERATION, updated_after=recent_since)
+            if time.monotonic() >= self.backlog_paused_until:
+                done += self.process_pending(BACKLOG_REQUEST_BUDGET, updated_before=recent_since,
+                                             active_since=self.download_cutoff(),
+                                             request_budget=BACKLOG_REQUEST_BUDGET)
+                done += self.download_waiting_files(FILE_REQUEST_BUDGET)
+        except ApiError as error:
+            if error.kind != "rate_limited":
+                raise
+            self._downloads_refused(error)
+            log.warning("rate limited by ChatGPT; older chats wait %d minutes, recent chats are still tried every cycle",
+                        RATE_LIMIT_PAUSE_SECONDS // 60)
+            return
+        if done:
+            self.downloads_refused_since = None
+
+    def download_cutoff(self) -> float | None:
+        """Chats with no activity since then are listed but not downloaded (DOWNLOAD_DAYS). None means everything."""
+        if self.config.download_days <= 0:
+            return None
+        return time.time() - self.config.download_days * 86400
+
+    def _downloads_refused(self, error: ApiError) -> None:
+        """Pause the older chats; recent chats are still tried every cycle."""
+        if self.downloads_refused_since is None:
+            self.downloads_refused_since = time.time()
+        self.backlog_paused_until = time.monotonic() + RATE_LIMIT_PAUSE_SECONDS
+        self._alert_if_refused_too_long(error)
+
+    def _lists_answered(self) -> None:
+        """A chat list came back: quick checks go back to every minute."""
+        if self.lists_refused_since is not None:
+            log.info("ChatGPT answers the chat list again")
+        self.lists_refused_since = None
+        self.list_refusals = 0
+        if self.after_rest:
+            self.after_rest = False
+            self.notifier.resumed()
+
+    def _alert_if_refused_too_long(self, error: ApiError) -> None:
+        started = min(t for t in (self.downloads_refused_since, self.lists_refused_since) if t is not None)
+        if time.time() - started >= RATE_LIMIT_ALERT_SECONDS:
+            self.notifier.set_problem(
+                "rate_limited", True,
+                f"ChatGPT has refused requests for over {RATE_LIMIT_ALERT_SECONDS // 60} minutes ({error.detail[:100]}). "
+                "The backup keeps retrying gently on its own; nothing new is saved until it lets up.")
+
+    def _rate_limit_over_if_clear(self) -> None:
+        if self.downloads_refused_since is None and self.lists_refused_since is None:
+            self.notifier.set_problem("rate_limited", False, "ChatGPT accepts requests again")
+
+    def rest_until(self) -> float:
+        """The Unix time in data/rest-until, or 0. Until then ChatGPT gets no requests at all."""
+        try:
+            return float((self.config.data_dir / REST_FILE).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return 0.0
+
+    def rest_if_asked(self) -> bool:
+        """Honour data/rest-until: close the browser, send nothing, then start again gently. True if it rested."""
+        until = self.rest_until()
+        if until <= time.time():
+            return False
+        until_text = format_time(until, self.tz)
+        log.info("resting until %s: no requests to ChatGPT until then", until_text)
+        if self.db.get_state("rest_notice") != str(until):   # one note per rest, even across restarts
+            self.db.set_state("rest_notice", str(until))
+            self.notifier.resting(until_text)
+        self.browser.stop()
+        self.sleep(until - time.time())
+        if self.stop_requested:
+            return True
+        log.info("rest over; starting again gently")
+        self.after_rest = True
+        self.list_refusals = 0
+        self.next_sweep = time.monotonic() + FIRST_SWEEP_DELAY_SECONDS
+        self._start_browser_with_retries()
+        return True
+
     def write_index(self) -> None:
         if not self.index_dirty:
             return
@@ -317,7 +477,7 @@ class Poller:
                                   ("; make room or the backup will stop" if free < MIN_FREE_BYTES else ""))
         now = time.time()
         if self.notifier.digest_due(now, self.tz):
-            stats: dict = dict(self.db.stats_since(now - 86400))
+            stats: dict = dict(self.db.stats_since(now - 86400, active_since=self.download_cutoff()))
             last_sweep = self.db.get_state("last_complete_sweep_at")
             if last_sweep:
                 stats["last_sweep"] = format_time(float(last_sweep), self.tz)
@@ -327,24 +487,29 @@ class Poller:
 
     def run_forever(self) -> int:
         self.watchdog.start()
-        self._start_browser_with_retries()
         self.notifier.startup_notice(time.time())
-        self.next_sweep = time.monotonic()
+        self.next_sweep = time.monotonic() + FIRST_SWEEP_DELAY_SECONDS
+        if not self.rest_if_asked():     # a rest starts before the browser ever opens chatgpt.com
+            self._start_browser_with_retries()
         self.next_restart = time.monotonic() + BROWSER_RESTART_SECONDS
         next_poll = time.monotonic()
         while not self.stop_requested:
             self.watchdog.beat()
+            if self.rest_if_asked():
+                next_poll = time.monotonic()
+                continue
             wait = next_poll - time.monotonic()
             if wait > 0:
                 self.sleep(wait)
                 continue
-            next_poll = time.monotonic() + self._cycle()
+            wait_seconds = self._cycle()
+            next_poll = time.monotonic() + wait_seconds   # the rest starts when the cycle ends, however long it took
         log.info("stopping")
         self.browser.stop()
         return 0
 
     def run_once(self) -> int:
-        """One fast poll plus up to PENDING_PER_ITERATION chats, then exit. For setup and testing."""
+        """One fast poll plus up to ONCE_PENDING_LIMIT chats, then exit. For setup and testing."""
         self.watchdog.start()
         try:
             self._start_browser()
@@ -352,7 +517,7 @@ class Poller:
                 print(LOGIN_HELP)
                 return 2
             self.fast_poll()
-            archived = self.process_pending(PENDING_PER_ITERATION)
+            archived = self.process_pending(ONCE_PENDING_LIMIT, active_since=self.download_cutoff())
             self.write_index()
         except ApiError as error:
             if error.kind == "login_required":
@@ -379,26 +544,35 @@ class Poller:
                 self.notifier.set_problem("login", False, "Logged in to ChatGPT again")
 
             if time.monotonic() >= self.next_sweep:
-                self.sweep()
-                self.next_sweep = time.monotonic() + SWEEP_SECONDS
+                try:
+                    self.sweep()
+                    self.next_sweep = time.monotonic() + SWEEP_SECONDS
+                except ApiError as error:
+                    if error.kind != "rate_limited":
+                        raise
+                    self.backlog_paused_until = time.monotonic() + RATE_LIMIT_PAUSE_SECONDS
+                    self.next_sweep = time.monotonic() + SWEEP_RETRY_SECONDS
+                    log.warning("full check rate limited by ChatGPT; trying it again in %d minutes, "
+                                "quick checks carry on", SWEEP_RETRY_SECONDS // 60)
+                    return self._poll_interval()
             else:
                 self.fast_poll()
-            self.process_pending(PENDING_PER_ITERATION)
+            self._lists_answered()
+            self.archive_pending()
             self.write_index()
             self.check_health()
 
             self.failures = 0
             self.challenge_failures = 0
-            self.rate_limited_cycles = 0
             self.notifier.set_problem("api_errors", False, "ChatGPT API calls work again")
             self.notifier.set_problem("challenge", False, "Cloudflare check cleared")
-            self.notifier.set_problem("rate_limited", False, "ChatGPT accepts requests again")
+            self._rate_limit_over_if_clear()
 
             if time.monotonic() >= self.next_restart:
                 log.info("routine browser restart")
                 self._restart_browser()
                 self.next_restart = time.monotonic() + BROWSER_RESTART_SECONDS
-            return POLL_SECONDS * random.uniform(1 - POLL_JITTER, 1 + POLL_JITTER)
+            return self._poll_interval()
 
         except ApiError as error:
             if error.kind == "login_required":
@@ -471,17 +645,21 @@ class Poller:
                 "lasts for hours, check that the machine is on your home internet, not a VPN.")
         return CHALLENGE_RETRY_SECONDS if error.kind == "challenge" else BLOCKED_RETRY_SECONDS
 
+    def _poll_interval(self) -> float:
+        return POLL_SECONDS * random.uniform(1 - POLL_JITTER, 1 + POLL_JITTER)
+
     def _handle_rate_limit(self, error: ApiError) -> float:
-        """ChatGPT wants fewer requests. That is not a failure: no browser restart, no error alert, just a pause."""
-        self.rate_limited_cycles += 1
-        log.warning("rate limited by ChatGPT (%d cycles in a row); pausing %d minutes",
-                    self.rate_limited_cycles, RATE_LIMIT_PAUSE_SECONDS // 60)
-        if self.rate_limited_cycles >= RATE_LIMIT_ALERT_AFTER:
-            self.notifier.set_problem(
-                "rate_limited", True,
-                f"ChatGPT has refused requests for over an hour ({error.detail[:100]}). The backup keeps "
-                "pausing and retrying on its own; chats are saved once it lets up.")
-        return RATE_LIMIT_PAUSE_SECONDS
+        """The quick check's chat list was refused. Not a failure: back off 2, 4, 8 ... up to 30 minutes."""
+        self.list_refusals += 1
+        if self.lists_refused_since is None:
+            self.lists_refused_since = time.time()
+        self.backlog_paused_until = time.monotonic() + RATE_LIMIT_PAUSE_SECONDS
+        self._alert_if_refused_too_long(error)
+        first, longest = LIST_BACKOFF_SECONDS
+        wait = min(first * 2 ** (self.list_refusals - 1), longest)
+        log.warning("chat list rate limited by ChatGPT (%d in a row); next quick check in %d minutes",
+                    self.list_refusals, wait // 60)
+        return wait
 
     def _handle_failure(self, error: BaseException) -> float:
         self.failures += 1
