@@ -1,6 +1,11 @@
 services:
   chatbackup:
     build: .
+    # The Playwright image's pwuser is uid 1001. Run as the host user (uid 1000) instead, so
+    # ./data needs no chown and the archive stays readable by you and by rclone.
+    user: "1000:1000"
+    environment:
+      HOME: /tmp
     env_file: .env
     volumes:
       - ./data:/data

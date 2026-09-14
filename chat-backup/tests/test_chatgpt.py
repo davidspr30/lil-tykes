@@ -73,8 +73,8 @@ def test_list_project_conversations_follows_the_cursor(fake_api):
     first = {"items": [{"id": "p1", "title": "A", "create_time": 1.0, "update_time": 2.0}], "cursor": "n1"}
     second = {"items": [{"id": "p2", "title": "B", "create_time": 1.0, "update_time": 2.0}], "cursor": None}
     api = fake_api({
-        "/backend-api/gizmos/g-p-aaaa/conversations?cursor=0&limit=100": first,
-        "/backend-api/gizmos/g-p-aaaa/conversations?cursor=n1&limit=100": second,
+        "/backend-api/gizmos/g-p-aaaa/conversations?cursor=0&limit=50": first,
+        "/backend-api/gizmos/g-p-aaaa/conversations?cursor=n1&limit=50": second,
     })
     items = chatgpt.list_project_conversations(api, "g-p-aaaa")
     assert [item.id for item in items] == ["p1", "p2"]

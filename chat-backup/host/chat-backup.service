@@ -6,8 +6,10 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 # Change these two lines: your Linux user (its rclone config is used) and where chat-backup lives.
-User=david
-Environment=APP_DIR=/home/david/lil-tykes/chat-backup
+User=tucci-shop
+Environment=APP_DIR=/home/tucci-shop/Desktop/repos/lil-tykes/chat-backup
+# rclone is installed per-user in ~/.local/bin, which systemd does not search by default.
+Environment=PATH=/home/tucci-shop/.local/bin:/usr/local/bin:/usr/bin:/bin
 # The leading "-" means a failed status check must not stop the mirror from running.
 ExecStart=-/bin/sh ${APP_DIR}/host/check-status.sh
 ExecStart=/bin/sh ${APP_DIR}/host/mirror.sh

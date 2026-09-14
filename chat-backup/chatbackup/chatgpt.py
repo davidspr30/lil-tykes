@@ -23,6 +23,7 @@ ApiGet = Callable[[str], Any]
 
 PAGE_SIZE = 100          # the server answers 422 to anything above 100
 RECENT_PAGE_SIZE = 50
+PROJECT_PAGE_SIZE = 50   # a Project's chat list answers 422 to anything above 50
 MAX_PAGES = 200          # safety stop so a misbehaving server can't make us loop forever
 
 CHALLENGE_MARKERS = ("just a moment", "enable javascript and cookies", "cdn-cgi/challenge-platform")
@@ -222,7 +223,10 @@ def _to_project(item: Mapping[str, Any]) -> Project | None:
         return None
     display = gizmo.get("display") or {}
     title = clean_title(display.get("name") or gizmo.get("name") or "")
-    conversations = [to_list_item(raw, project_id) for raw in item.get("conversations") or [] if raw.get("id")]
+    raw_conversations = item.get("conversations") or []
+    if isinstance(raw_conversations, Mapping):    # the sidebar wraps them as {"items": [...], "cursor": ...}
+        raw_conversations = raw_conversations.get("items") or []
+    conversations = [to_list_item(raw, project_id) for raw in raw_conversations if isinstance(raw, Mapping) and raw.get("id")]
     return Project(id=str(project_id), title=title, conversations=conversations)
 
 
@@ -232,7 +236,7 @@ def list_project_conversations(api_get: ApiGet, project_id: str) -> list[ListIte
     cursor: Any = 0
     for _ in range(MAX_PAGES):
         path = (f"/backend-api/gizmos/{quote(project_id, safe='')}/conversations"
-                f"?cursor={quote(str(cursor), safe='')}&limit={PAGE_SIZE}")
+                f"?cursor={quote(str(cursor), safe='')}&limit={PROJECT_PAGE_SIZE}")
         page = api_get(path)
         items.extend(to_list_item(raw, project_id) for raw in page.get("items") or [] if raw.get("id"))
         cursor = page.get("cursor")

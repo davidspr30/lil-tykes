@@ -61,13 +61,19 @@ Check: the script prints `OK: session cookie found` and a file
 `storage_state.json` exists. Close the browser window; do **not** log out in
 it (that would cancel the session you just saved).
 
+No screen, for example when you are connected over SSH from a phone? Run
+`tools/remote-login/run.sh` on the backup machine instead (after step 2's
+`docker compose build`). It prints an address and password: open the address in
+your phone's browser over Tailscale, log in to ChatGPT there, and the login is
+saved into `data/` automatically.
+
 ### 2. Backup machine: install and configure
 
 ```bash
 git clone <this repository> && cd lil-tykes/chat-backup
 cp .env.example .env
 nano .env            # set TZ and LOCALE to what your laptop uses; leave NTFY_TOPIC empty for now
-mkdir -p data && sudo chown 1000:1000 data
+mkdir -p data
 ```
 
 Copy `storage_state.json` from the laptop into `data/`, for example with
@@ -78,7 +84,8 @@ docker compose build
 ```
 
 Check: the build finishes without errors. The service runs as user id 1000
-inside the container, which is why `data` must be owned by 1000.
+inside the container (`user:` in docker-compose.yml), so `data` must belong to
+user 1000: check with `id -u`, and change `user:` if yours differs.
 
 ### 3. First run
 

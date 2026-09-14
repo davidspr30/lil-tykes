@@ -40,7 +40,8 @@ def main() -> int:
         context.close()
         browser.close()
 
-    if SESSION_COOKIE not in cookie_names:
+    # NextAuth splits a large session cookie into ".0", ".1", ... pieces, so match the prefix.
+    if not any((name or "").startswith(SESSION_COOKIE) for name in cookie_names):
         print(f"WARNING: no ChatGPT session cookie was found, so {OUTPUT} will not work. Were you logged in?")
         return 1
     print(f"OK: session cookie found. Saved {OUTPUT}.")

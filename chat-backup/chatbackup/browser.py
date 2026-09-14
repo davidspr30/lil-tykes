@@ -185,7 +185,8 @@ class Browser:
         return False
 
     def _has_session_cookie(self) -> bool:
-        return any(cookie.get("name") == SESSION_COOKIE for cookie in self.context.cookies(CHATGPT_ORIGIN))
+        # NextAuth splits a large session cookie into ".0", ".1", ... pieces, so match the prefix.
+        return any((cookie.get("name") or "").startswith(SESSION_COOKIE) for cookie in self.context.cookies(CHATGPT_ORIGIN))
 
     def _open_chatgpt(self) -> None:
         self._token = None
