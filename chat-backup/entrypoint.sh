@@ -3,6 +3,10 @@
 # over to Python with "exec" so Docker's stop signal reaches Python directly.
 set -e
 
+# A crash or power cut leaves Xvfb's lock and socket behind, and Docker restarts keep /tmp,
+# so Xvfb would refuse to start ("Server is already active"). Nothing else runs yet, so they are stale.
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/dev/null 2>&1 &
 export DISPLAY=:99
 
