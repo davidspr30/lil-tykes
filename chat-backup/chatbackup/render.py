@@ -212,7 +212,9 @@ def is_streaming(conversation: Mapping[str, Any]) -> bool:
     if not path:
         return False
     status = message_of(path[-1]).get("status")
-    return status is not None and status != "finished_successfully"
+    # Every "finished_*" status is final. "finished_partial_completion" is an answer cut off for good
+    # (for example by a usage limit); treating it as unfinished re-fetched the chat every 2 minutes forever.
+    return status is not None and not str(status).startswith("finished")
 
 
 # --- rendering ----------------------------------------------------------------------------

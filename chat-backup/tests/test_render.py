@@ -151,6 +151,12 @@ def test_is_streaming(canvas_conversation, branch_conversation):
     assert render.is_streaming(branch_conversation) is False
 
 
+def test_cut_off_answer_is_not_streaming(branch_conversation):
+    last = branch_conversation["mapping"][branch_conversation["current_node"]]["message"]
+    last["status"] = "finished_partial_completion"
+    assert render.is_streaming(branch_conversation) is False
+
+
 def test_message_counts_and_model(branch_conversation):
     assert render.message_counts(branch_conversation) == (8, 9)
     assert render.model_of(branch_conversation) == "gpt-5"
