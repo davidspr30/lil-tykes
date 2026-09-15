@@ -160,8 +160,12 @@ small; generated images add up.
 
 ### 7. Mirror and health check on a timer
 
-Edit `host/chat-backup.service`: set `User=` to your Linux user and
-`APP_DIR=` to the full path of this folder. Then:
+Edit `host/chat-backup.service`: set `User=` to your Linux user, `APP_DIR=` to
+the full path of this folder, and the home directory in `PATH=`. That last line
+matters because systemd does not search `~/.local/bin`, so if you installed
+rclone there (the `install.sh` above puts it in `/usr/bin`, but a manual install
+often does not) the mirror fails with "rclone: not found". If your rclone is
+system-wide, you can delete the `PATH=` line instead. Then:
 
 ```bash
 sudo cp host/chat-backup.service host/chat-backup.timer /etc/systemd/system/
