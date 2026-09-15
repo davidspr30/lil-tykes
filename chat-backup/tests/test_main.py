@@ -389,3 +389,19 @@ def test_run_once(poller, branch_conversation, capsys):
     assert "1 chats known, 1 archived this run" in capsys.readouterr().out
     assert (instance.archive.root / "INDEX.md").exists()
     assert instance.browser.starts == 1
+
+
+def test_answered_quick_check_records_last_success(poller):
+    too_many = ApiError("rate_limited", 429, detail="Too many requests")
+    instance = poller({
+        "/backend-api/conversations?offset=0&limit=50&order=updated": [too_many, {"items": []}],
+        "/backend-api/gizmos/snorlax/sidebar": {"items": [], "cursor": None},
+    })
+    instance.next_sweep = float("inf")
+    instance.next_restart = float("inf")
+    marker = instance.config.data_dir / ".last-success"
+
+    instance._cycle()
+    assert not marker.exists()                                   # refused: nothing to record
+    instance._cycle()
+    assert abs(int(marker.read_text()) - time.time()) < 5        # answered: the host script sees a fresh time

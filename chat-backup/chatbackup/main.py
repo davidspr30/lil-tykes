@@ -50,6 +50,7 @@ RATE_LIMIT_PAUSE_SECONDS = 10 * 60  # ChatGPT said "too many requests": older ch
 RATE_LIMIT_ALERT_SECONDS = 30 * 60  # ChatGPT has refused lists or downloads for this long: tell the phone
 LIST_BACKOFF_SECONDS = (2 * 60, 30 * 60)  # a refused quick check waits 2, 4, 8 ... up to 30 minutes
 REST_FILE = "rest-until"            # data/rest-until holds a Unix time; until then ChatGPT gets no requests at all
+LAST_SUCCESS_FILE = ".last-success" # data/.last-success: when ChatGPT last answered a check; the host script watches it
 RECENT_PROJECT_CHATS = 5            # chats per project the fast poll looks at
 STREAMING_RECHECK_SECONDS = 120     # an answer was still being written: look again this much later
 BROWSER_RESTART_SECONDS = 6 * 3600  # Chromium leaks memory; a routine restart keeps it in check
@@ -413,7 +414,8 @@ class Poller:
         self._alert_if_refused_too_long(error)
 
     def _lists_answered(self) -> None:
-        """A chat list came back: quick checks go back to every minute."""
+        """A chat list came back: note the time for the host health check, and quick checks go back to every minute."""
+        write_atomic(self.config.data_dir / LAST_SUCCESS_FILE, str(int(time.time())).encode("ascii"))
         if self.lists_refused_since is not None:
             log.info("ChatGPT answers the chat list again")
         self.lists_refused_since = None

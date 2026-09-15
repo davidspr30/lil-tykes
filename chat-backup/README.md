@@ -191,6 +191,55 @@ exists, and `systemctl list-timers chat-backup.timer` shows the next run.
 - The next morning after 9:00 a low-priority daily summary arrives. That
   summary is the "everything is fine" signal: if it stops coming, look.
 
+### 9. Outside watcher and crash alerts
+
+Every alert so far comes from the backup machine itself, so a machine that
+crashes, loses power or loses its internet connection cannot tell you. This step
+adds an outside service that notices when the machine goes quiet, and a phone
+note after every restart saying whether the machine shut down cleanly.
+
+1. Sign up at [healthchecks.io](https://healthchecks.io) (the free plan monitors
+   20 checks). Under **Integrations**, add **ntfy** with your `NTFY_TOPIC` so its
+   alerts reach the same phone app (email is on by default).
+2. Add a check named `machine`: period **5 minutes**, grace time **10 minutes**.
+3. Add a check named `chat-backup`: period **15 minutes**, grace time **45 minutes**.
+4. Put each check's ping URL in `.env` as `HC_MACHINE_URL=` and
+   `HC_CHAT_BACKUP_URL=`. The URLs work like passwords.
+5. Edit `User=` and `APP_DIR=` in `host/chat-backup-heartbeat.service` and
+   `host/chat-backup-boot-report.service` as in step 7. The boot report reads the
+   system journal, so that user must be in the `adm` or `systemd-journal` group
+   (`id` lists your groups). Then:
+
+```bash
+sudo cp host/chat-backup-heartbeat.service host/chat-backup-heartbeat.timer \
+        host/chat-backup-boot-report.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now chat-backup-heartbeat.timer
+sudo systemctl enable chat-backup-boot-report.service
+```
+
+Check: both checks on healthchecks.io turn green within 15 minutes, and
+`sudo systemctl start chat-backup-boot-report.service` sends a phone note about
+the last restart.
+
+Two settings let the machine recover without you:
+
+- **After a power cut:** in the BIOS (F2 at power-on), set what happens when power
+  returns (on Dell: Power Management, AC Recovery) to **Power On**. Otherwise the
+  machine stays off until someone presses the button.
+- **After a freeze:** Intel machines have a hardware watchdog that restarts the
+  machine when the system stops responding. Ubuntu leaves its driver off. To use it:
+
+```bash
+sudo modprobe iTCO_wdt && ls /dev/watchdog0     # must list /dev/watchdog0; stop here if it does not
+echo iTCO_wdt | sudo tee /etc/modules-load.d/iTCO_wdt.conf
+sudo mkdir -p /etc/systemd/system.conf.d
+printf '[Manager]\nRuntimeWatchdogSec=1min\n' | sudo tee /etc/systemd/system.conf.d/watchdog.conf
+sudo systemctl daemon-reexec
+```
+
+Check: `systemctl show -p RuntimeWatchdogUSec` prints `RuntimeWatchdogUSec=1min`.
+
 ## Everyday use
 
 The archive is a folder. Open `INDEX.md` in any Markdown viewer (Obsidian, VS
@@ -208,9 +257,14 @@ editor's search or `grep -ri "phrase" data/archive`.
 | `chat-backup resting` / `resumed` | a planned break started, or ChatGPT answered again after it | Nothing. |
 | `disk` | under 2 GB free on the archive disk | Make room. |
 | `poller down` | no heartbeat for 10 minutes (sent by the host script) | `docker compose ps`, `docker compose logs --tail 100`. |
+| `chatgpt down` | the service runs, but no ChatGPT check has succeeded for an hour (sent by the host script) | `docker compose logs --tail 100`: look for `browser start failed`, `login` or `rate limited`. |
 | `mirror down` | rclone has not succeeded for 2 hours | `journalctl -u chat-backup --since -3h`. Often an expired Google token: repeat step 6.3. |
 | daily summary | everything is running | Nothing. Its absence is the alarm. |
 | `New ChatGPT chat` | a chat was just created (only with `NOTIFY_NEW_CHATS=true`) | Nothing; tap it to open the chat. |
+| healthchecks.io: `machine` down | the machine has not checked in for 15 minutes: off, crashed or offline (step 9) | Go and look at it. A crash note follows once it is back. |
+| healthchecks.io: `chat-backup` down | the host health check has not reported "all fine" for an hour (step 9) | Read the other alerts. With none, check `systemctl list-timers chat-backup.timer`. |
+| `<machine> crashed or lost power` | sent at boot: the previous run ended without a shutdown (step 9) | Check that chat-backup recovered: `docker compose ps`, `docker compose logs --tail 50`. |
+| `<machine> restarted` | sent at boot after a clean restart (step 9) | Nothing. |
 
 Every alert is sent once when the problem starts and once when it is over.
 
@@ -224,8 +278,9 @@ Every alert is sent once when the problem starts and once when it is over.
   use them again. `0` downloads your whole history.
 - To give ChatGPT's rate limit a break, write a Unix time into `data/rest-until`,
   for example 3 hours from now: `echo $(( $(date +%s) + 10800 )) > data/rest-until`.
-  Until then the service sends ChatGPT nothing (its heartbeat keeps going, so there is
-  no "poller down" alert), then starts again with quick checks only.
+  Until then the service sends ChatGPT nothing (its heartbeat keeps going and the host
+  script knows about the rest, so there is no "poller down" or "chatgpt down" alert),
+  then starts again with quick checks only.
 - Set `LOG_LEVEL=DEBUG` in `.env` to see the first 300 characters of every
   ChatGPT response. That is the first thing to do when ChatGPT changes
   something and the log shows `KeyError` or `bad_body`.
@@ -254,6 +309,9 @@ Every alert is sent once when the problem starts and once when it is over.
   progress and exits the process if it stalls for 15 minutes; Docker restarts
   it. The browser is also restarted every 6 hours because Chromium leaks
   memory.
+- Every chat list ChatGPT answers also writes `data/.last-success`. The host
+  script alerts when that is over an hour old, which catches a service that
+  runs but cannot do its job, such as a browser that will not start.
 - SQLite (`data/chatbackup.sqlite3`) remembers what has been fetched. A
   snapshot of it is mirrored with the archive; the live file is not (it would
   be inconsistent mid-write).
@@ -268,8 +326,8 @@ Every alert is sent once when the problem starts and once when it is over.
 - Canvas documents are rebuilt by replaying ChatGPT's edits; when an edit
   cannot be replayed, a `.replay-warning.txt` sits next to the file and the raw
   edits stay in `conversation.json`.
-- If the backup machine loses power, nothing can alert you. The missing daily
-  summary is the signal.
+- Without step 9, a machine that crashes or loses power cannot alert you; the
+  missing daily summary is then the only signal.
 
 ## Development
 
