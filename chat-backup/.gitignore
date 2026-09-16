@@ -1,0 +1,10 @@
+# Live session cookies and the archive live here. Never commit them.
+data/
+.env
+storage_state.json
+host-state/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/

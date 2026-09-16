@@ -1,0 +1,77 @@
+{
+  "title": "Joke time\n",
+  "conversation_id": "11111111-2222-3333-4444-555555555555",
+  "create_time": 1789300000.0,
+  "update_time": 1789300400.0,
+  "default_model_slug": "gpt-5",
+  "current_node": "a1",
+  "is_archived": false,
+  "gizmo_id": null,
+  "mapping": {
+    "root": {"id": "root", "parent": null, "children": ["sys"], "message": null},
+    "sys": {
+      "id": "sys", "parent": "root", "children": ["u1"],
+      "message": {
+        "id": "sys", "author": {"role": "system"}, "create_time": null,
+        "content": {"content_type": "text", "parts": [""]},
+        "metadata": {"is_visually_hidden_from_conversation": true}, "recipient": "all"
+      }
+    },
+    "u1": {
+      "id": "u1", "parent": "sys", "children": ["as1"],
+      "message": {
+        "id": "u1", "author": {"role": "user"}, "create_time": 1789300000.0,
+        "content": {"content_type": "text", "parts": ["Hello"]},
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "as1": {
+      "id": "as1", "parent": "u1", "children": ["u2"],
+      "message": {
+        "id": "as1", "author": {"role": "assistant"}, "create_time": 1789300010.0,
+        "content": {"content_type": "text", "parts": ["Hi there"]},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "u2": {
+      "id": "u2", "parent": "as1", "children": ["recap", "b1"],
+      "message": {
+        "id": "u2", "author": {"role": "user"}, "create_time": 1789300050.0,
+        "content": {"content_type": "text", "parts": ["Tell me a joke"]},
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "recap": {
+      "id": "recap", "parent": "u2", "children": ["a1"],
+      "message": {
+        "id": "recap", "author": {"role": "assistant"}, "create_time": 1789300100.0,
+        "content": {"content_type": "reasoning_recap", "content": "Thought for 3 seconds"},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "a1": {
+      "id": "a1", "parent": "recap", "children": [],
+      "message": {
+        "id": "a1", "author": {"role": "assistant"}, "create_time": 1789300110.0,
+        "content": {"content_type": "text", "parts": ["Why did the chicken cross the road? To get to the other side."]},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "b1": {
+      "id": "b1", "parent": "u2", "children": ["b2"],
+      "message": {
+        "id": "b1", "author": {"role": "tool", "name": "web"}, "create_time": 1789300200.0,
+        "content": {"content_type": "tether_browsing_display", "result": "search results here"},
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "b2": {
+      "id": "b2", "parent": "b1", "children": [],
+      "message": {
+        "id": "b2", "author": {"role": "assistant"}, "create_time": 1789300210.0,
+        "content": {"content_type": "text", "parts": ["Knock knock. Who's there? Lettuce. Lettuce in, it's cold!"]},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "finished_successfully"
+      }
+    }
+  }
+}

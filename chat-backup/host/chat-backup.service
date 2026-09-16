@@ -1,0 +1,17 @@
+[Unit]
+Description=chat-backup: health check and Google Drive mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Change these three lines: your Linux user (its rclone config is used), where
+# chat-backup lives, and your home directory in PATH.
+User=YOUR_USERNAME
+Environment=APP_DIR=/home/YOUR_USERNAME/lil-tykes/chat-backup
+# Only needed if rclone lives in ~/.local/bin, which systemd does not search by default.
+# If you installed rclone system-wide, you can delete this line.
+Environment=PATH=/home/YOUR_USERNAME/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The leading "-" means a failed status check must not stop the mirror from running.
+ExecStart=-/bin/sh ${APP_DIR}/host/check-status.sh
+ExecStart=/bin/sh ${APP_DIR}/host/mirror.sh

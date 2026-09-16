@@ -1,0 +1,85 @@
+{
+  "title": "Trip planning",
+  "conversation_id": "33333333-2222-3333-4444-555555555555",
+  "create_time": 1789320000.0,
+  "update_time": 1789320500.0,
+  "default_model_slug": "gpt-5",
+  "current_node": "a3",
+  "is_archived": false,
+  "gizmo_id": null,
+  "mapping": {
+    "root": {"id": "root", "parent": null, "children": ["u1"], "message": null},
+    "u1": {
+      "id": "u1", "parent": "root", "children": ["c1"],
+      "message": {
+        "id": "u1", "author": {"role": "user"}, "create_time": 1789320000.0,
+        "content": {"content_type": "text", "parts": ["Plan my trip"]},
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "c1": {
+      "id": "c1", "parent": "u1", "children": ["a1"],
+      "message": {
+        "id": "c1", "author": {"role": "assistant"}, "create_time": 1789320010.0,
+        "content": {"content_type": "code", "language": "json", "text": "{\"name\": \"Trip plan\", \"type\": \"document\", \"content\": \"Day 1: Lisbon\\nDay 2: Porto\"}"},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "canmore.create_textdoc", "status": "finished_successfully"
+      }
+    },
+    "a1": {
+      "id": "a1", "parent": "c1", "children": ["u2"],
+      "message": {
+        "id": "a1", "author": {"role": "assistant"}, "create_time": 1789320020.0,
+        "content": {"content_type": "text", "parts": ["I made a plan in the canvas."]},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "u2": {
+      "id": "u2", "parent": "a1", "children": ["c2"],
+      "message": {
+        "id": "u2", "author": {"role": "user"}, "create_time": 1789320100.0,
+        "content": {"content_type": "text", "parts": ["Swap Porto for Sintra"]},
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "c2": {
+      "id": "c2", "parent": "u2", "children": ["a2"],
+      "message": {
+        "id": "c2", "author": {"role": "assistant"}, "create_time": 1789320110.0,
+        "content": {"content_type": "code", "language": "json", "text": "{\"updates\": [{\"pattern\": \"Porto\", \"replacement\": \"Sintra\", \"multiple\": false}]}"},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "canmore.update_textdoc", "status": "finished_successfully"
+      }
+    },
+    "a2": {
+      "id": "a2", "parent": "c2", "children": ["u3"],
+      "message": {
+        "id": "a2", "author": {"role": "assistant"}, "create_time": 1789320120.0,
+        "content": {"content_type": "text", "parts": ["Done."]},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "u3": {
+      "id": "u3", "parent": "a2", "children": ["c3"],
+      "message": {
+        "id": "u3", "author": {"role": "user"}, "create_time": 1789320400.0,
+        "content": {"content_type": "text", "parts": ["Add a day in Faro"]},
+        "metadata": {}, "recipient": "all", "status": "finished_successfully"
+      }
+    },
+    "c3": {
+      "id": "c3", "parent": "u3", "children": ["a3"],
+      "message": {
+        "id": "c3", "author": {"role": "assistant"}, "create_time": 1789320410.0,
+        "content": {"content_type": "code", "language": "json", "text": "{\"updates\": [{\"pattern\": \"Day 3: Coimbra\", \"replacement\": \"Day 3: Faro\", \"multiple\": false}]}"},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "canmore.update_textdoc", "status": "finished_successfully"
+      }
+    },
+    "a3": {
+      "id": "a3", "parent": "c3", "children": [],
+      "message": {
+        "id": "a3", "author": {"role": "assistant"}, "create_time": 1789320420.0,
+        "content": {"content_type": "text", "parts": ["Adding"]},
+        "metadata": {"model_slug": "gpt-5"}, "recipient": "all", "status": "in_progress"
+      }
+    }
+  }
+}

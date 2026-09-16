@@ -1,0 +1,11 @@
+[Unit]
+Description=chat-backup: tell healthchecks.io this machine is up
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Change these two lines as in chat-backup.service: your Linux user and where chat-backup lives.
+User=YOUR_USERNAME
+Environment=APP_DIR=/home/YOUR_USERNAME/lil-tykes/chat-backup
+ExecStart=/bin/sh ${APP_DIR}/host/heartbeat.sh
