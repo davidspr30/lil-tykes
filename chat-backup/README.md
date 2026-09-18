@@ -2,7 +2,7 @@
 
 Keeps a local, browsable copy of every chat in your ChatGPT account, including
 chats you later delete. It runs 24/7 in Docker on a machine at home, checks
-ChatGPT about once a minute, writes each chat as plain files, mirrors the
+ChatGPT every 2 to 15 minutes (more often while you are using it), writes each chat as plain files, mirrors the
 archive to Google Drive, and sends a push notification to your phone when it
 needs you.
 
@@ -110,10 +110,10 @@ docker compose up -d
 docker compose logs -f        # Ctrl-C stops the log view, not the service
 ```
 
-Check: the log shows `full check started` and a stream of `archived:` lines
-(the first full pass through a big account takes a while: a few chats per
-minute, roughly 15 hours per 3,000 chats, to stay under ChatGPT's rate limit; chats you
-are actively using are saved first). After a couple of minutes `docker compose ps` shows the container as
+Check: the log shows `archived:` lines, and `full check started` after half an hour
+(the first pass through a big account takes a while: a few chats per check, so
+several days per 3,000 chats, to stay well under ChatGPT's rate limit, which your own
+browser shares; `DOWNLOAD_DAYS` keeps it short, and chats you are actively using are saved first). After a couple of minutes `docker compose ps` shows the container as
 `healthy`, and `data/.heartbeat` is refreshed every 30 seconds.
 
 ### 5. Phone alerts
@@ -180,11 +180,11 @@ exists, and `systemctl list-timers chat-backup.timer` shows the next run.
 
 ### 8. Try the whole thing
 
-- Start a throwaway chat in ChatGPT. Within about two minutes the log shows
+- Start a throwaway chat in ChatGPT. Within about 15 minutes the log shows
   `new:` and `archived:` for it and its folder appears.
 - Edit one of your messages in it. The transcript gains an "Alternate branches"
   section.
-- Delete the chat. After the next full check (up to 6 hours) the folder gets
+- Delete the chat. After the next full check (up to a day) the folder gets
   a `DELETED.txt` and the transcript header says so. Nothing is removed.
 - Stop the service for 25 minutes (`docker compose stop`) and start it again.
   Your phone gets "poller down", then "poller ok".
@@ -253,11 +253,11 @@ editor's search or `grep -ri "phrase" data/archive`.
 | `login` | the saved ChatGPT session expired | Step 1 on the laptop, copy the file into `data/`. The service notices within 10 minutes; `docker compose restart` makes it immediate. |
 | `challenge` | Cloudflare keeps challenging the browser | Usually clears by itself. If it lasts hours, make sure the machine is not on a VPN and has your normal home address. |
 | `api_errors` | several checks in a row failed | `docker compose logs --tail 100`. If ChatGPT changed its internals, the code needs updating. |
-| `rate_limited` | ChatGPT has refused requests for over 30 minutes | Usually nothing: the service backs off by itself (quick checks after 2, 4, 8, up to 30 minutes) and returns to normal when ChatGPT answers. If it lasts for hours, give it a rest (see Things to know). |
+| `rate_limited` | ChatGPT has refused requests for over 30 minutes | Usually nothing: the service backs off by itself (quick checks after 15, 30, then every 60 minutes) and returns to normal when ChatGPT answers. If it lasts for hours, give it a rest (see Things to know). |
 | `chat-backup resting` / `resumed` | a planned break started, or ChatGPT answered again after it | Nothing. |
 | `disk` | under 2 GB free on the archive disk | Make room. |
 | `poller down` | no heartbeat for 10 minutes (sent by the host script) | `docker compose ps`, `docker compose logs --tail 100`. |
-| `chatgpt down` | the service runs, but no ChatGPT check has succeeded for an hour (sent by the host script) | `docker compose logs --tail 100`: look for `browser start failed`, `login` or `rate limited`. |
+| `chatgpt down` | the service runs, but no ChatGPT check has succeeded for two hours (sent by the host script) | `docker compose logs --tail 100`: look for `browser start failed`, `login` or `rate limited`. |
 | `mirror down` | rclone has not succeeded for 2 hours | `journalctl -u chat-backup --since -3h`. Often an expired Google token: repeat step 6.3. |
 | daily summary | everything is running | Nothing. Its absence is the alarm. |
 | `New ChatGPT chat` | a chat was just created (only with `NOTIFY_NEW_CHATS=true`) | Nothing; tap it to open the chat. |
@@ -281,6 +281,12 @@ Every alert is sent once when the problem starts and once when it is over.
   Until then the service sends ChatGPT nothing (its heartbeat keeps going and the host
   script knows about the rest, so there is no "poller down" or "chatgpt down" alert),
   then starts again with quick checks only.
+- `QUIET_HOURS` in `.env` (for example `1-8`: 1:00 until 8:00, in your `TZ`) is a rest
+  every night: no requests to ChatGPT, and no phone notes about it. Chats you use during
+  those hours are saved when they end.
+- ChatGPT's rate limit is per account, so it is shared with your own browser: if the
+  backup uses it up, ChatGPT shows *you* "Too many requests". That is why the service
+  checks slowly while you are not using ChatGPT, and backs off hard when refused.
 - Set `LOG_LEVEL=DEBUG` in `.env` to see the first 300 characters of every
   ChatGPT response. That is the first thing to do when ChatGPT changes
   something and the log shows `KeyError` or `bad_body`.
@@ -297,20 +303,22 @@ Every alert is sent once when the problem starts and once when it is over.
 - A real, visible Chromium (on a virtual display inside the container) stays
   logged in with a persistent profile. Headless browsers get challenged; this
   one looks like a person's browser because it is one.
-- Every minute it asks ChatGPT for the most recently updated chats and the
-  Projects sidebar. Anything new or changed is fetched and written: raw JSON
-  first, then files, Canvas documents and the transcript. A chat whose answer
-  is still being written is fetched again two minutes later.
-- Every 6 hours it lists everything (active, archived, and every Project,
-  because the main list leaves Project chats out). A chat missing from all
-  lists is fetched one last time if ChatGPT still allows it, then marked
-  deleted.
+- It asks ChatGPT for the most recently updated chats and the Projects
+  sidebar: every 2 minutes while you are using ChatGPT (a check found a new or
+  changed chat in the last 20 minutes), every 15 minutes otherwise, and not at
+  all during `QUIET_HOURS`. Anything new or changed is fetched and written: raw
+  JSON first, then files, Canvas documents and the transcript. A chat whose
+  answer is still being written is fetched again two minutes later.
+- Once a day, at a moment you are not using ChatGPT, it lists everything
+  (active, archived, and every Project, because the main list leaves Project
+  chats out). A chat missing from all lists is fetched one last time if ChatGPT
+  still allows it, then marked deleted. A refused full check waits 3 hours.
 - A watchdog thread writes `data/.heartbeat` only while the main loop makes
   progress and exits the process if it stalls for 15 minutes; Docker restarts
   it. The browser is also restarted every 6 hours because Chromium leaks
   memory.
 - Every chat list ChatGPT answers also writes `data/.last-success`. The host
-  script alerts when that is over an hour old, which catches a service that
+  script alerts when that is over two hours old, which catches a service that
   runs but cannot do its job, such as a browser that will not start.
 - SQLite (`data/chatbackup.sqlite3`) remembers what has been fetched. A
   snapshot of it is mirrored with the archive; the live file is not (it would
@@ -318,7 +326,8 @@ Every alert is sent once when the problem starts and once when it is over.
 
 ## Limits
 
-- A chat created and deleted within one minute can be missed. While ChatGPT is
+- A chat created and deleted between two checks (up to about 20 minutes apart, or
+  during `QUIET_HOURS`) can be missed. While ChatGPT is
   rate limiting, a chat deleted before a download succeeds may keep only its title.
 - Voice-mode audio is not saved. Files over 50 MB are skipped.
 - A chat's first 4 files download together with it. Any more, and any a restart cut off,

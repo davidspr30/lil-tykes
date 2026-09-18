@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -10,9 +11,9 @@ from chatbackup.archive import Archive
 from chatbackup.chatgpt import ApiError, ListItem
 from chatbackup.config import Config
 from chatbackup.db import Database
-from chatbackup.main import (BACKLOG_REQUEST_BUDGET, FIRST_SWEEP_DELAY_SECONDS, LIST_BACKOFF_SECONDS,
-                             RATE_LIMIT_ALERT_SECONDS, RATE_LIMIT_PAUSE_SECONDS, REST_FILE, SWEEP_RETRY_SECONDS,
-                             Poller, Watchdog)
+from chatbackup.main import (ACTIVE_POLL_SECONDS, BACKLOG_REQUEST_BUDGET, FIRST_SWEEP_DELAY_SECONDS,
+                             IDLE_POLL_SECONDS, LIST_BACKOFF_SECONDS, POLL_JITTER, RATE_LIMIT_ALERT_SECONDS,
+                             RATE_LIMIT_PAUSE_SECONDS, REST_FILE, SWEEP_RETRY_SECONDS, SWEEP_SECONDS, Poller, Watchdog)
 from chatbackup.notify import Notifier
 
 FILES_ID = "22222222-2222-3333-4444-555555555555"
@@ -212,7 +213,7 @@ def test_refused_quick_checks_back_off_and_alert_after_a_while(poller):
     first, longest = LIST_BACKOFF_SECONDS
 
     waits = [instance._cycle() for _ in range(5)]
-    assert waits == [first, first * 2, first * 4, first * 8, longest]            # 2, 4, 8, 16, 30 minutes
+    assert waits == [first, first * 2, longest, longest, longest]                # 15, 30, 60, 60, 60 minutes
     assert instance.failures == 0 and instance.browser.starts == 0               # not an error, no browser restart
     assert instance.db.get_state("alert:rate_limited", "ok") == "ok"             # not during the first 30 minutes
 
@@ -220,7 +221,7 @@ def test_refused_quick_checks_back_off_and_alert_after_a_while(poller):
     assert instance._cycle() == longest
     assert instance.db.get_state("alert:rate_limited", "ok") == "problem"
 
-    assert instance._cycle() < first                                             # answered: back to every minute
+    assert instance._cycle() <= IDLE_POLL_SECONDS * (1 + POLL_JITTER)             # answered: back to normal
     assert instance.list_refusals == 0
     assert instance.db.get_state("alert:rate_limited", "ok") == "ok"
     assert instance.db.get_state("alert:api_errors", "ok") == "ok"
@@ -234,7 +235,7 @@ def test_rate_limited_full_check_is_postponed_while_quick_checks_carry_on(poller
     })
     instance.next_restart = float("inf")
 
-    assert instance._cycle() < LIST_BACKOFF_SECONDS[0]                     # no long pause
+    assert instance._cycle() <= IDLE_POLL_SECONDS * (1 + POLL_JITTER)      # no backoff, just the normal wait
     assert instance.next_sweep > time.monotonic() + SWEEP_RETRY_SECONDS - 5
     assert instance.failures == 0 and instance.call_gap == (0, 0)          # normal pacing restored after the check
 
@@ -405,3 +406,93 @@ def test_answered_quick_check_records_last_success(poller):
     assert not marker.exists()                                   # refused: nothing to record
     instance._cycle()
     assert abs(int(marker.read_text()) - time.time()) < 5        # answered: the host script sees a fresh time
+
+
+def test_quick_checks_speed_up_while_you_use_chatgpt(poller):
+    now = time.time()
+    new_chat = {"id": "c-new", "title": "Fresh", "create_time": now, "update_time": now}
+    instance = poller({
+        "/backend-api/conversations?offset=0&limit=50&order=updated": [{"items": []}, {"items": [new_chat]}],
+        "/backend-api/gizmos/snorlax/sidebar": {"items": [], "cursor": None},
+        "/backend-api/conversation/c-new": ApiError("not_found", 404),
+    })
+    instance.next_sweep = float("inf")
+    instance.next_restart = float("inf")
+
+    idle_wait = instance._cycle()                                          # nothing new: you are not using ChatGPT
+    assert IDLE_POLL_SECONDS * (1 - POLL_JITTER) <= idle_wait <= IDLE_POLL_SECONDS * (1 + POLL_JITTER)
+    active_wait = instance._cycle()                                        # a new chat: you are
+    assert ACTIVE_POLL_SECONDS * (1 - POLL_JITTER) <= active_wait <= ACTIVE_POLL_SECONDS * (1 + POLL_JITTER)
+
+    instance.last_activity = time.monotonic() - 21 * 60                    # 20 quiet minutes later: slow again
+    assert not instance.is_active()
+
+
+def test_full_check_waits_while_you_use_chatgpt(poller):
+    instance = poller({
+        "/backend-api/conversations?offset=0&limit=50&order=updated": {"items": []},
+        "/backend-api/gizmos/snorlax/sidebar": {"items": [], "cursor": None},
+    })
+    instance.next_sweep = 0.0                                              # due...
+    instance.next_restart = float("inf")
+    instance.last_activity = time.monotonic()                              # ...but you are busy
+
+    instance._cycle()
+    assert "/backend-api/conversations?offset=0&limit=100&order=updated" not in instance.api_calls.calls
+
+
+def test_full_check_is_due_a_day_after_the_last_one_even_after_a_restart(poller):
+    instance = poller({})
+    instance._schedule_first_sweep()                                       # never swept: soon, after the quick checks
+    assert instance.next_sweep == pytest.approx(time.monotonic() + FIRST_SWEEP_DELAY_SECONDS, abs=5)
+
+    instance.db.set_state("last_complete_sweep_at", str(time.time() - 3600))
+    instance._schedule_first_sweep()                                       # swept an hour ago: 23 hours from now
+    assert instance.next_sweep == pytest.approx(time.monotonic() + SWEEP_SECONDS - 3600, abs=5)
+
+
+def test_quiet_hours_end(poller):
+    instance = poller({})
+    tz = ZoneInfo("America/New_York")
+    at = lambda hour, minute=0: datetime(2026, 9, 18, hour, minute, tzinfo=tz).timestamp()
+    assert instance.quiet_hours_end(at(3)) is None                         # no QUIET_HOURS set
+
+    instance.config = dataclasses.replace(instance.config, quiet_hours=(1, 8))
+    assert instance.quiet_hours_end(at(0, 59)) is None
+    assert instance.quiet_hours_end(at(1)) == at(8)
+    assert instance.quiet_hours_end(at(7, 59)) == at(8)
+    assert instance.quiet_hours_end(at(8)) is None
+
+    instance.config = dataclasses.replace(instance.config, quiet_hours=(22, 6))   # across midnight
+    assert instance.quiet_hours_end(at(23)) == datetime(2026, 9, 19, 6, tzinfo=tz).timestamp()
+    assert instance.quiet_hours_end(at(5)) == at(6)
+    assert instance.quiet_hours_end(at(12)) is None
+
+
+def test_quiet_hours_rest_without_phone_notes(poller, monkeypatch):
+    instance = poller({})
+    hour = datetime.now(ZoneInfo(instance.config.timezone)).hour
+    instance.config = dataclasses.replace(instance.config, quiet_hours=(hour, (hour + 2) % 24))   # quiet right now
+    slept, notes = [], []
+    monkeypatch.setattr(instance, "sleep", lambda seconds: slept.append(seconds))
+    monkeypatch.setattr(instance.notifier, "resting", lambda until_text: notes.append("resting"))
+    monkeypatch.setattr(instance.notifier, "resumed", lambda: notes.append("resumed"))
+
+    instance.start_quiet_hours_if_due()
+    assert instance.rest_until() == instance.quiet_hours_end(time.time())  # the host health check sees the rest too
+    assert instance.rest_if_asked() is True
+    assert slept and slept[0] > 3600 - 60                                  # sat out the quiet hours...
+    assert instance.api_calls.calls == []                                  # ...without a single request
+    instance._lists_answered()
+    assert notes == []                                                     # routine: nothing on the phone
+
+
+def test_quiet_hours_never_shorten_a_longer_rest(poller):
+    instance = poller({})
+    hour = datetime.now(ZoneInfo(instance.config.timezone)).hour
+    instance.config = dataclasses.replace(instance.config, quiet_hours=(hour, (hour + 2) % 24))
+    longer = time.time() + 5 * 3600
+    (instance.config.data_dir / REST_FILE).write_text(str(longer))
+
+    instance.start_quiet_hours_if_due()
+    assert instance.rest_until() == longer

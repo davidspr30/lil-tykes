@@ -19,6 +19,7 @@ class Config:
     log_level: str
     notify_new_chats: bool = False  # push a phone alert for every newly created chat
     download_days: int = 0          # only download chats created or used in the last N days; 0 means all history
+    quiet_hours: tuple[int, int] | None = None  # (start hour, end hour) in local time: no requests to ChatGPT then
 
     @property
     def archive_dir(self) -> Path:
@@ -44,6 +45,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     except ValueError:
         raise SystemExit(f"DOWNLOAD_DAYS={days_text!r} is not a whole number of days (use 0 for your whole history)")
 
+    quiet_hours = parse_quiet_hours(env.get("QUIET_HOURS", "").strip())
+
     return Config(
         data_dir=Path(env.get("DATA_DIR", "/data")),
         timezone=timezone,
@@ -53,4 +56,19 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         log_level=env.get("LOG_LEVEL", "").strip().upper() or "INFO",
         notify_new_chats=env.get("NOTIFY_NEW_CHATS", "").strip().lower() in ("1", "true", "yes", "on"),
         download_days=max(0, download_days),
+        quiet_hours=quiet_hours,
     )
+
+
+def parse_quiet_hours(text: str) -> tuple[int, int] | None:
+    """'1-8' -> (1, 8): from 1:00 until 8:00. '22-6' crosses midnight. Empty means no quiet hours."""
+    if not text:
+        return None
+    start_text, _, end_text = text.partition("-")
+    try:
+        start, end = int(start_text), int(end_text)
+    except ValueError:
+        raise SystemExit(f"QUIET_HOURS={text!r} should look like 1-8 (from 1:00 until 8:00), or be empty")
+    if not (0 <= start <= 23 and 0 <= end <= 23) or start == end:
+        raise SystemExit(f"QUIET_HOURS={text!r} needs two different hours from 0 to 23, like 1-8")
+    return start, end

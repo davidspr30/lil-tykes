@@ -1,9 +1,14 @@
 """The polling loop. Read this file top to bottom to see how the service behaves.
 
-Every minute (fast poll): look at the most recently updated chats and the
-Projects sidebar, and fetch whatever is new or changed.
-Every 30 minutes (full check): list everything, so chats that vanished can be
-marked as deleted, and save a snapshot of the bookkeeping.
+Quick check: look at the most recently updated chats and the Projects sidebar,
+and fetch whatever is new or changed. Every 2 minutes while you are using
+ChatGPT (a new or changed chat in the last 20 minutes), every 15 minutes otherwise.
+Once a day, while you are not using ChatGPT (full check): list everything, so
+chats that vanished can be marked as deleted, and save a snapshot of the bookkeeping.
+During QUIET_HOURS: no requests at all.
+
+ChatGPT's rate limit is shared with your own browser, so every request here is
+one you cannot make yourself. Keep it that way: few, slow, and backing off hard.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import signal
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -33,10 +39,12 @@ from .render import (FileInfo, build_index_csv, build_index_md, build_transcript
 
 log = logging.getLogger("chatbackup")
 
-POLL_SECONDS = 60                   # fast poll interval
+ACTIVE_POLL_SECONDS = 2 * 60        # quick check interval while you are using ChatGPT...
+IDLE_POLL_SECONDS = 15 * 60         # ...and while you are not
+ACTIVE_WINDOW_SECONDS = 20 * 60     # "using ChatGPT" = a quick check found a new or changed chat this recently
 POLL_JITTER = 0.4                   # +/- 40 %, so the timing is not a metronome
-SWEEP_SECONDS = 6 * 3600            # full check interval; quick checks cover every project, so this mostly marks deletions
-SWEEP_RETRY_SECONDS = 60 * 60       # a refused full check waits this long
+SWEEP_SECONDS = 24 * 3600           # full check interval; quick checks cover every project, so this mostly marks deletions
+SWEEP_RETRY_SECONDS = 3 * 3600      # a refused full check waits this long
 FIRST_SWEEP_DELAY_SECONDS = 30 * 60 # after a start or a rest, only quick checks for a while
 CALL_GAP_SECONDS = (1.0, 1.5)       # minimum pause between two API calls
 SWEEP_CALL_GAP_SECONDS = (2.5, 3.5) # slower during a full check: about 55 requests at ~20 a minute
@@ -46,9 +54,9 @@ BACKLOG_REQUEST_BUDGET = 8          # API requests per cycle for older chats (fi
 FILE_REQUEST_BUDGET = 8             # API requests per cycle for files still waiting (about 2 per file)
 INLINE_FILES_PER_CHAT = 4           # files downloaded together with a chat; any more wait for FILE_REQUEST_BUDGET
 ONCE_PENDING_LIMIT = 8              # chats fetched by --once
-RATE_LIMIT_PAUSE_SECONDS = 10 * 60  # ChatGPT said "too many requests": older chats wait this long
+RATE_LIMIT_PAUSE_SECONDS = 60 * 60  # ChatGPT said "too many requests": older chats wait this long
 RATE_LIMIT_ALERT_SECONDS = 30 * 60  # ChatGPT has refused lists or downloads for this long: tell the phone
-LIST_BACKOFF_SECONDS = (2 * 60, 30 * 60)  # a refused quick check waits 2, 4, 8 ... up to 30 minutes
+LIST_BACKOFF_SECONDS = (15 * 60, 60 * 60)  # a refused quick check waits 15, 30, then 60 minutes
 REST_FILE = "rest-until"            # data/rest-until holds a Unix time; until then ChatGPT gets no requests at all
 LAST_SUCCESS_FILE = ".last-success" # data/.last-success: when ChatGPT last answered a check; the host script watches it
 RECENT_PROJECT_CHATS = 5            # chats per project the fast poll looks at
@@ -125,6 +133,7 @@ class Poller:
         self.lists_refused_since: float | None = None      # first refused quick check since the last one that worked
         self.list_refusals = 0                             # refused quick checks in a row, for the backoff
         self.after_rest = False                            # send a "resumed" note once ChatGPT answers after a rest
+        self.last_activity = float("-inf")             # monotonic time a quick check last found a new or changed chat
         self.backlog_paused_until = 0.0                # monotonic time; older chats wait until then
         self.requests_made = 0                         # every API request and file download, for the request budget
         self.next_sweep = 0.0
@@ -214,6 +223,8 @@ class Poller:
 
     def _record(self, item: ListItem) -> None:
         result = self.db.upsert_listed(item, time.time())
+        if result != "same":
+            self.last_activity = time.monotonic()
         is_recent = item.create_time >= time.time() - RECENT_CHAT_SECONDS
         if result == "new" and self.config.notify_new_chats and is_recent:
             self.notifier.new_chat(item.title, item.id)
@@ -414,7 +425,7 @@ class Poller:
         self._alert_if_refused_too_long(error)
 
     def _lists_answered(self) -> None:
-        """A chat list came back: note the time for the host health check, and quick checks go back to every minute."""
+        """A chat list came back: note the time for the host health check, and quick checks go back to normal."""
         write_atomic(self.config.data_dir / LAST_SUCCESS_FILE, str(int(time.time())).encode("ascii"))
         if self.lists_refused_since is not None:
             log.info("ChatGPT answers the chat list again")
@@ -443,14 +454,38 @@ class Poller:
         except (OSError, ValueError):
             return 0.0
 
+    def quiet_hours_end(self, now: float) -> float | None:
+        """When the current QUIET_HOURS end (a Unix time), or None outside them."""
+        if self.config.quiet_hours is None:
+            return None
+        start, end = self.config.quiet_hours
+        local = datetime.fromtimestamp(now, self.tz)
+        if start < end:
+            inside = start <= local.hour < end
+        else:                                   # crosses midnight, like 22-6
+            inside = local.hour >= start or local.hour < end
+        if not inside:
+            return None
+        end_time = local.replace(hour=end, minute=0, second=0, microsecond=0)
+        if end_time <= local:
+            end_time += timedelta(days=1)
+        return end_time.timestamp()
+
+    def start_quiet_hours_if_due(self) -> None:
+        """Quiet hours are a rest: write their end into data/rest-until, which also tells the host health check."""
+        quiet_end = self.quiet_hours_end(time.time())
+        if quiet_end is not None and quiet_end > self.rest_until():
+            write_atomic(self.config.data_dir / REST_FILE, str(quiet_end).encode("ascii"))
+
     def rest_if_asked(self) -> bool:
         """Honour data/rest-until: close the browser, send nothing, then start again gently. True if it rested."""
         until = self.rest_until()
         if until <= time.time():
             return False
         until_text = format_time(until, self.tz)
-        log.info("resting until %s: no requests to ChatGPT until then", until_text)
-        if self.db.get_state("rest_notice") != str(until):   # one note per rest, even across restarts
+        quiet = until == self.quiet_hours_end(time.time())   # the nightly quiet hours are routine: no phone notes
+        log.info("%s until %s: no requests to ChatGPT until then", "quiet hours" if quiet else "resting", until_text)
+        if not quiet and self.db.get_state("rest_notice") != str(until):   # one note per rest, even across restarts
             self.db.set_state("rest_notice", str(until))
             self.notifier.resting(until_text)
         self.browser.stop()
@@ -458,11 +493,17 @@ class Poller:
         if self.stop_requested:
             return True
         log.info("rest over; starting again gently")
-        self.after_rest = True
+        self.after_rest = not quiet
         self.list_refusals = 0
-        self.next_sweep = time.monotonic() + FIRST_SWEEP_DELAY_SECONDS
+        self._schedule_first_sweep()
         self._start_browser_with_retries()
         return True
+
+    def _schedule_first_sweep(self) -> None:
+        """After a start or a rest: quick checks first, and no full check until a day after the last complete one."""
+        last_sweep = float(self.db.get_state("last_complete_sweep_at") or 0)
+        due_in = last_sweep + SWEEP_SECONDS - time.time()
+        self.next_sweep = time.monotonic() + max(FIRST_SWEEP_DELAY_SECONDS, due_in)
 
     def write_index(self) -> None:
         if not self.index_dirty:
@@ -490,13 +531,15 @@ class Poller:
     def run_forever(self) -> int:
         self.watchdog.start()
         self.notifier.startup_notice(time.time())
-        self.next_sweep = time.monotonic() + FIRST_SWEEP_DELAY_SECONDS
+        self._schedule_first_sweep()
+        self.start_quiet_hours_if_due()
         if not self.rest_if_asked():     # a rest starts before the browser ever opens chatgpt.com
             self._start_browser_with_retries()
         self.next_restart = time.monotonic() + BROWSER_RESTART_SECONDS
         next_poll = time.monotonic()
         while not self.stop_requested:
             self.watchdog.beat()
+            self.start_quiet_hours_if_due()
             if self.rest_if_asked():
                 next_poll = time.monotonic()
                 continue
@@ -545,7 +588,7 @@ class Poller:
                     return LOGIN_RETRY_SECONDS
                 self.notifier.set_problem("login", False, "Logged in to ChatGPT again")
 
-            if time.monotonic() >= self.next_sweep:
+            if time.monotonic() >= self.next_sweep and not self.is_active():
                 try:
                     self.sweep()
                     self.next_sweep = time.monotonic() + SWEEP_SECONDS
@@ -647,11 +690,16 @@ class Poller:
                 "lasts for hours, check that the machine is on your home internet, not a VPN.")
         return CHALLENGE_RETRY_SECONDS if error.kind == "challenge" else BLOCKED_RETRY_SECONDS
 
+    def is_active(self) -> bool:
+        """True while you are using ChatGPT: a quick check found a new or changed chat in the last 20 minutes."""
+        return time.monotonic() - self.last_activity < ACTIVE_WINDOW_SECONDS
+
     def _poll_interval(self) -> float:
-        return POLL_SECONDS * random.uniform(1 - POLL_JITTER, 1 + POLL_JITTER)
+        interval = ACTIVE_POLL_SECONDS if self.is_active() else IDLE_POLL_SECONDS
+        return interval * random.uniform(1 - POLL_JITTER, 1 + POLL_JITTER)
 
     def _handle_rate_limit(self, error: ApiError) -> float:
-        """The quick check's chat list was refused. Not a failure: back off 2, 4, 8 ... up to 30 minutes."""
+        """The quick check's chat list was refused. Not a failure: back off 15, 30, then 60 minutes."""
         self.list_refusals += 1
         if self.lists_refused_since is None:
             self.lists_refused_since = time.time()

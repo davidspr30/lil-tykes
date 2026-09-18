@@ -45,15 +45,16 @@ if [ "$(age_of "$APP_DIR/data/.heartbeat")" -gt 600 ]; then poller=down; else po
 report poller "$poller" "No heartbeat from the poller for over 10 minutes. On the backup machine run: docker compose ps; docker compose logs --tail 100"
 
 # The heartbeat only shows the process is alive; .last-success shows ChatGPT actually answered a check.
-# Quick checks back off for at most 30 minutes, so an hour without one is a real problem. Skipped while
+# Quick checks run at least every ~20 minutes and back off for at most 60, so two hours without one is a
+# real problem. Skipped while
 # the poller is already reported down, during a rest (data/rest-until) and for 10 minutes after it,
 # and until the first success (so setup is not noisy).
 rest_until=$(cat "$APP_DIR/data/rest-until" 2>/dev/null || echo 0)
 rest_until=${rest_until%%.*}
 case "$rest_until" in ''|*[!0-9]*) rest_until=0 ;; esac
 if [ "$poller" = ok ] && [ "$rest_until" -lt $(( now - 600 )) ] && [ -f "$APP_DIR/data/.last-success" ]; then
-  if [ "$(age_of "$APP_DIR/data/.last-success")" -gt 3600 ]; then state=down; else state=ok; fi
-  report chatgpt "$state" "The service is running but no ChatGPT check has succeeded for over an hour. Run: docker compose logs --tail 100 (look for 'browser start failed', 'login' or 'rate limited')"
+  if [ "$(age_of "$APP_DIR/data/.last-success")" -gt 7200 ]; then state=down; else state=ok; fi
+  report chatgpt "$state" "The service is running but no ChatGPT check has succeeded for over two hours. Run: docker compose logs --tail 100 (look for 'browser start failed', 'login' or 'rate limited')"
 fi
 
 # Only judge the mirror once it has succeeded at least once (so setup is not noisy).
