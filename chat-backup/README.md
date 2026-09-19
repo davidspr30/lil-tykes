@@ -281,6 +281,11 @@ Every alert is sent once when the problem starts and once when it is over.
   Until then the service sends ChatGPT nothing (its heartbeat keeps going and the host
   script knows about the rest, so there is no "poller down" or "chatgpt down" alert),
   then starts again with quick checks only.
+- To watch closely for a while, write a Unix time into `data/fast-until`, for example an
+  hour from now: `echo $(( $(date +%s) + 3600 )) > data/fast-until`. Until then quick checks
+  run about every minute (from the next check on), then go back to the normal pace by
+  themselves. A refused check still backs off. Keep it short: every-minute checks around
+  the clock are what used up the rate limit before.
 - `QUIET_HOURS` in `.env` (for example `1-8`: 1:00 until 8:00, in your `TZ`) is a rest
   every night: no requests to ChatGPT, and no phone notes about it. Chats you use during
   those hours are saved when they end.

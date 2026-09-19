@@ -11,8 +11,8 @@ from chatbackup.archive import Archive
 from chatbackup.chatgpt import ApiError, ListItem
 from chatbackup.config import Config
 from chatbackup.db import Database
-from chatbackup.main import (ACTIVE_POLL_SECONDS, BACKLOG_REQUEST_BUDGET, FIRST_SWEEP_DELAY_SECONDS,
-                             IDLE_POLL_SECONDS, LIST_BACKOFF_SECONDS, POLL_JITTER, RATE_LIMIT_ALERT_SECONDS,
+from chatbackup.main import (ACTIVE_POLL_SECONDS, BACKLOG_REQUEST_BUDGET, FAST_FILE, FAST_POLL_SECONDS,
+                             FIRST_SWEEP_DELAY_SECONDS, IDLE_POLL_SECONDS, LIST_BACKOFF_SECONDS, POLL_JITTER, RATE_LIMIT_ALERT_SECONDS,
                              RATE_LIMIT_PAUSE_SECONDS, REST_FILE, SWEEP_RETRY_SECONDS, SWEEP_SECONDS, Poller, Watchdog)
 from chatbackup.notify import Notifier
 
@@ -426,6 +426,18 @@ def test_quick_checks_speed_up_while_you_use_chatgpt(poller):
 
     instance.last_activity = time.monotonic() - 21 * 60                    # 20 quiet minutes later: slow again
     assert not instance.is_active()
+
+
+def test_fast_file_means_a_check_every_minute_until_it_runs_out(poller):
+    instance = poller({})
+    fast_file = instance.config.data_dir / FAST_FILE
+
+    fast_file.write_text(str(time.time() + 3600))                          # asked for an hour of fast checks
+    assert FAST_POLL_SECONDS * (1 - POLL_JITTER) <= instance._poll_interval() <= FAST_POLL_SECONDS * (1 + POLL_JITTER)
+    fast_file.write_text(str(time.time() - 1))                             # the hour is over: the normal pace, by itself
+    assert instance._poll_interval() >= IDLE_POLL_SECONDS * (1 - POLL_JITTER)
+    fast_file.write_text("not a time")                                     # a typo must never mean "fast forever"
+    assert instance._poll_interval() >= IDLE_POLL_SECONDS * (1 - POLL_JITTER)
 
 
 def test_full_check_waits_while_you_use_chatgpt(poller):

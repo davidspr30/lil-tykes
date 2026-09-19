@@ -41,6 +41,7 @@ log = logging.getLogger("chatbackup")
 
 ACTIVE_POLL_SECONDS = 2 * 60        # quick check interval while you are using ChatGPT...
 IDLE_POLL_SECONDS = 15 * 60         # ...and while you are not
+FAST_POLL_SECONDS = 60              # ...and while data/fast-until asks for it (costs rate limit: keep it short)
 ACTIVE_WINDOW_SECONDS = 20 * 60     # "using ChatGPT" = a quick check found a new or changed chat this recently
 POLL_JITTER = 0.4                   # +/- 40 %, so the timing is not a metronome
 SWEEP_SECONDS = 24 * 3600           # full check interval; quick checks cover every project, so this mostly marks deletions
@@ -58,6 +59,7 @@ RATE_LIMIT_PAUSE_SECONDS = 60 * 60  # ChatGPT said "too many requests": older ch
 RATE_LIMIT_ALERT_SECONDS = 30 * 60  # ChatGPT has refused lists or downloads for this long: tell the phone
 LIST_BACKOFF_SECONDS = (15 * 60, 60 * 60)  # a refused quick check waits 15, 30, then 60 minutes
 REST_FILE = "rest-until"            # data/rest-until holds a Unix time; until then ChatGPT gets no requests at all
+FAST_FILE = "fast-until"            # data/fast-until holds a Unix time; until then quick checks run every FAST_POLL_SECONDS
 LAST_SUCCESS_FILE = ".last-success" # data/.last-success: when ChatGPT last answered a check; the host script watches it
 RECENT_PROJECT_CHATS = 5            # chats per project the fast poll looks at
 STREAMING_RECHECK_SECONDS = 120     # an answer was still being written: look again this much later
@@ -694,8 +696,18 @@ class Poller:
         """True while you are using ChatGPT: a quick check found a new or changed chat in the last 20 minutes."""
         return time.monotonic() - self.last_activity < ACTIVE_WINDOW_SECONDS
 
+    def fast_until(self) -> float:
+        """The Unix time in data/fast-until, or 0. Until then quick checks run every minute, then pace themselves again."""
+        try:
+            return float((self.config.data_dir / FAST_FILE).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return 0.0
+
     def _poll_interval(self) -> float:
-        interval = ACTIVE_POLL_SECONDS if self.is_active() else IDLE_POLL_SECONDS
+        if time.time() < self.fast_until():   # only the normal pace changes: a refused check still backs off
+            interval = FAST_POLL_SECONDS
+        else:
+            interval = ACTIVE_POLL_SECONDS if self.is_active() else IDLE_POLL_SECONDS
         return interval * random.uniform(1 - POLL_JITTER, 1 + POLL_JITTER)
 
     def _handle_rate_limit(self, error: ApiError) -> float:
